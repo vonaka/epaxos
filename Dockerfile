@@ -7,9 +7,10 @@ ARG user
 
 WORKDIR /app
 
-ADD https://api.github.com/repos/$user/epaxos/git/refs/heads/master epaxos-version.json
+ADD https://api.github.com/repos/$user/epaxos/git/refs/heads/debug epaxos-version.json
 RUN git clone https://github.com/$user/epaxos && \
     cd epaxos && \
+    git checkout debug && \
     make compile
 
 ENV TYPE master

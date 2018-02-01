@@ -298,8 +298,6 @@ func (r *Replica) run() {
 
 	for !r.Shutdown {
 
-		r.Replica.Mutex.Lock()
-
 		select {
 
 		case propose := <-onOffProposeChan:
@@ -406,6 +404,8 @@ func (r *Replica) run() {
 			r.startRecoveryForInstance(iid.replica, iid.instance)
 		}
 
+		// to flush the cache ...
+		r.Replica.Mutex.Lock()
 		r.Replica.Mutex.Unlock()
 
 	}
@@ -426,7 +426,7 @@ func (r *Replica) executeCommands() {
 
 	for !r.Shutdown {
 		executed := false
-		r.Replica.Mutex.Lock()
+
 		for q := 0; q < r.N; q++ {
 			inst := int32(0)
 			for inst = r.ExecedUpTo[q] + 1; inst < r.crtInstance[q]; inst++ {
@@ -462,11 +462,12 @@ func (r *Replica) executeCommands() {
 				}
 			}
 		}
+
+
 		if !executed {
 			time.Sleep(SLEEP_TIME_NS)
 		}
 		//log.Println(r.ExecedUpTo, " ", r.crtInstance)
-		r.Replica.Mutex.Unlock()
 	}
 }
 

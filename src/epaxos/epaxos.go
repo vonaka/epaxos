@@ -1015,7 +1015,7 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 	}
 
 	allCommitted := true
-	// FIXME
+	// FIXME require r.N \leq 7 (dixit the original paper)
 	//for q := 0; q < r.N; q++ {
 	//	if inst.lb.committedDeps[q] < pareply.CommittedDeps[q] {
 	//		inst.lb.committedDeps[q] = pareply.CommittedDeps[q]

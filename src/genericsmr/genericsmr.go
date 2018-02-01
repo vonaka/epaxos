@@ -69,7 +69,7 @@ type Replica struct {
 	Ewma []float64
 	Latencies []int64
 
-	mutex sync.Mutex
+	Mutex sync.Mutex
 }
 
 func NewReplica(id int, peerAddrList []string, thrifty bool, exec bool, lread bool, dreply bool) *Replica {

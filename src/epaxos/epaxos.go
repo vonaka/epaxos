@@ -451,7 +451,7 @@ func (r *Replica) executeCommands() {
 					//if r.InstanceSpace[q][inst] == nil {
 					//	continue
 					//}
-					break // stop at the first problematic instance
+					// break // stop at the first problematic instance
 				}
 				if ok := r.exec.executeCommand(int32(q), inst); ok {
 					executed = true

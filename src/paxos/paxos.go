@@ -142,7 +142,7 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs, reply *gene
 	r.Mutex.Lock()
 	r.IsLeader = true
 	log.Println("I am the leader")
-	time.Sleep(5*time.Second) // wait that the connection is actually lost
+	time.Sleep(5 * time.Second) // wait that the connection is actually lost
 	r.Mutex.Unlock()
 	return nil
 }
@@ -197,7 +197,7 @@ func (r *Replica) run() {
 			onOffProposeChan = r.ProposeChan
 			break
 
-		case propose := <- onOffProposeChan:
+		case propose := <-onOffProposeChan:
 			//got a Propose from a client
 			dlog.Printf("Received proposal with type=%d\n", propose.Command.Op)
 			r.handlePropose(propose)
@@ -256,11 +256,11 @@ func (r *Replica) run() {
 func (r *Replica) makeBallot(instance int32) int32 {
 	ret := r.Id
 
-	if r.defaultBallot > ret{
+	if r.defaultBallot > ret {
 		ret = r.defaultBallot + 1
 	}
 
-	if r.maxRecvBallot > ret{
+	if r.maxRecvBallot > ret {
 		ret = r.maxRecvBallot + 1
 	}
 
@@ -272,7 +272,7 @@ func (r *Replica) updateCommittedUpTo() {
 		r.instanceSpace[r.committedUpTo+1].status == COMMITTED {
 		r.committedUpTo++
 	}
-	dlog.Printf("Committed up to %d",r.committedUpTo)
+	dlog.Printf("Committed up to %d", r.committedUpTo)
 }
 
 func (r *Replica) bcastPrepare(instance int32, ballot int32, toInfinity bool) {
@@ -367,7 +367,7 @@ func (r *Replica) bcastCommit(instance int32, ballot int32, command []state.Comm
 		}
 		if sent < (r.N >> 1) {
 			r.SendMsg(r.PreferredPeerOrder[q], r.commitShortRPC, argsShort)
-		}else{
+		} else {
 			r.SendMsg(r.PreferredPeerOrder[q], r.commitRPC, args)
 		}
 		sent++
@@ -439,14 +439,14 @@ func (r *Replica) handlePrepare(prepare *paxosproto.Prepare) {
 	if inst == nil {
 		ok := TRUE
 		if r.defaultBallot > prepare.Ballot {
-			dlog.Printf("Lower than default! %d < %d",prepare.Ballot, r.defaultBallot)
+			dlog.Printf("Lower than default! %d < %d", prepare.Ballot, r.defaultBallot)
 			ok = FALSE
 		}
 		preply = &paxosproto.PrepareReply{prepare.Instance, ok, r.defaultBallot, nil}
 	} else {
 		ok := TRUE
 		if prepare.Ballot < inst.ballot {
-			dlog.Printf("Lower than last ballot! %d < %d",prepare.Ballot, inst.ballot)
+			dlog.Printf("Lower than last ballot! %d < %d", prepare.Ballot, inst.ballot)
 			ok = FALSE
 		}
 		preply = &paxosproto.PrepareReply{prepare.Instance, ok, inst.ballot, inst.cmds}
@@ -458,7 +458,7 @@ func (r *Replica) handlePrepare(prepare *paxosproto.Prepare) {
 		r.defaultBallot = prepare.Ballot
 	}
 
-	if prepare.Ballot> r.maxRecvBallot {
+	if prepare.Ballot > r.maxRecvBallot {
 		r.maxRecvBallot = prepare.Ballot
 	}
 
@@ -470,7 +470,7 @@ func (r *Replica) handleAccept(accept *paxosproto.Accept) {
 
 	if inst == nil {
 		if accept.Ballot < r.defaultBallot {
-			dlog.Printf("Lower than default! %d < %d",accept.Ballot, r.defaultBallot)
+			dlog.Printf("Lower than default! %d < %d", accept.Ballot, r.defaultBallot)
 			areply = &paxosproto.AcceptReply{accept.Instance, FALSE, r.defaultBallot}
 		} else {
 			r.instanceSpace[accept.Instance] = &Instance{
@@ -595,7 +595,7 @@ func (r *Replica) handlePrepareReply(preply *paxosproto.PrepareReply) {
 		dlog.Printf("There is another active leader (%d,%d)", preply.Ballot, r.maxRecvBallot)
 		// TODO: there is probably another active leader
 		inst.lb.nacks++
-		if preply.Command != nil{
+		if preply.Command != nil {
 			inst.cmds = preply.Command
 		}
 		if preply.Ballot > r.maxRecvBallot {
@@ -645,7 +645,7 @@ func (r *Replica) handleAcceptReply(areply *paxosproto.AcceptReply) {
 			r.updateCommittedUpTo()
 		}
 	} else {
-		dlog.Printf("There is another active leader (",areply.Ballot," > ",r.maxRecvBallot,")")
+		dlog.Printf("There is another active leader (", areply.Ballot, " > ", r.maxRecvBallot, ")")
 		// TODO: there is probably another active leader
 		inst.lb.nacks++
 		if areply.Ballot > r.maxRecvBallot {
@@ -667,7 +667,7 @@ func (r *Replica) executeCommands() {
 			if r.instanceSpace[i].cmds != nil {
 				inst := r.instanceSpace[i]
 				for j := 0; j < len(inst.cmds); j++ {
-					dlog.Printf("Executing "+inst.cmds[j].String())
+					dlog.Printf("Executing " + inst.cmds[j].String())
 					if r.Dreply && inst.lb != nil && inst.lb.clientProposals != nil {
 						val := inst.cmds[j].Execute(r.State)
 						propreply := &genericsmrproto.ProposeReplyTS{
@@ -683,7 +683,7 @@ func (r *Replica) executeCommands() {
 				i++
 				executed = true
 			} else {
-				dlog.Printf("Retrieving instance %d",i)
+				dlog.Printf("Retrieving instance %d", i)
 				r.bcastPrepare(i, r.makeBallot(i), false)
 				break
 			}

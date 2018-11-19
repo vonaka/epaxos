@@ -11,13 +11,13 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"optgpaxos"
 	"os"
 	"os/signal"
 	"paxos"
 	"runtime"
 	"runtime/pprof"
 	"time"
-	"optgpaxos"
 )
 
 var portnum *int = flag.Int("port", 7070, "Port # to listen on. Defaults to 7070")
@@ -30,7 +30,7 @@ var doEpaxos *bool = flag.Bool("e", false, "Use EPaxos as the replication protoc
 var doOptgpaxos *bool = flag.Bool("o", false, "Use Optimized GPaxos as the replication protocol. Defaults to false.")
 var procs *int = flag.Int("p", 2, "GOMAXPROCS. Defaults to 2")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
- var thrifty = flag.Bool("thrifty",false, "Use only as many messages as strictly required for inter-replica communication.")
+var thrifty = flag.Bool("thrifty", false, "Use only as many messages as strictly required for inter-replica communication.")
 var exec = flag.Bool("exec", true, "Execute commands.")
 var lread = flag.Bool("lread", false, "Execute locally read command.")
 var dreply = flag.Bool("dreply", true, "Reply to client only after command has been executed.")
@@ -42,7 +42,7 @@ func main() {
 
 	runtime.GOMAXPROCS(*procs)
 
-	if *doMencius && *thrifty{
+	if *doMencius && *thrifty {
 		log.Fatal("incompatble options -m -thrifty")
 	}
 
@@ -74,7 +74,7 @@ func main() {
 		log.Println("Starting Generalized Paxos replica...")
 		rep := gpaxos.NewReplica(replicaId, nodeList, isLeader, *thrifty, *exec, *lread, *dreply)
 		rpc.Register(rep)
-	}else if *doOptgpaxos {
+	} else if *doOptgpaxos {
 		log.Println("Starting Optimized Generalized Paxos replica...")
 		rep := optgpaxos.NewReplica(replicaId, nodeList, isLeader, *thrifty, *exec, *lread, *dreply, *durable)
 		rpc.Register(rep)
@@ -100,7 +100,7 @@ func registerWithMaster(masterAddr string) (int, []string, bool) {
 	var reply masterproto.RegisterReply
 
 	for done := false; !done; {
-		log.Printf("connecting to: %v",masterAddr)
+		log.Printf("connecting to: %v", masterAddr)
 		mcli, err := rpc.DialHTTP("tcp", masterAddr)
 		if err == nil {
 			err = mcli.Call("Master.Register", args, &reply)
@@ -108,9 +108,9 @@ func registerWithMaster(masterAddr string) (int, []string, bool) {
 				done = true
 				break
 			}
-		} 
+		}
 		if err != nil {
-		   log.Printf("%v",err)
+			log.Printf("%v", err)
 		}
 		time.Sleep(1e9)
 	}

@@ -82,4 +82,3 @@ type BeTheLeaderReply struct {
 type Stats struct {
 	M map[string]int `json:"stats"`
 }
-

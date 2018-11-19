@@ -3,8 +3,9 @@ package chansmr
 import (
 	"io"
 )
+
 type ChanReader struct {
-	ch chan byte
+	ch  chan byte
 	err error
 }
 
@@ -14,45 +15,44 @@ func NewChanReader(reader chan byte) *ChanReader {
 	return &ChanReader{reader, nil}
 }
 
-
 func (r *ChanReader) Chan() <-chan byte {
 	return r.ch
 }
 
-func (r *ChanReader)  Read(p []byte) (n int, err error) {
+func (r *ChanReader) Read(p []byte) (n int, err error) {
 	n = 0
-    loop := true
-	if(r.err == io.EOF){
-	    return 0, io.EOF
-    }
+	loop := true
+	if r.err == io.EOF {
+		return 0, io.EOF
+	}
 	for r.err != io.EOF && loop && n < len(p) {
 		select {
 		case b, ok := <-r.ch:
 			if ok {
 				p[n] = b
-                n++
+				n++
 
-            } else {
-                r.err = io.EOF
-                break;
+			} else {
+				r.err = io.EOF
+				break
 			}
-        default:
-            loop = false
-            break
-        }
+		default:
+			loop = false
+			break
+		}
 	}
 	//dlog.Printf("Read %d bytes", n)
 	return n, err
 }
 
 func (r *ChanReader) Close() error {
-    _, ok := (<-r.ch)
+	_, ok := (<-r.ch)
 	if ok {
-        close(r.ch)
-        return nil
-    } else{
-        return nil
-    }
+		close(r.ch)
+		return nil
+	} else {
+		return nil
+	}
 }
 
 //func main() {

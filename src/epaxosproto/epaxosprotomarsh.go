@@ -1,12 +1,12 @@
 package epaxosproto
 
 import (
-	"io"
-	"sync"
-	"fastrpc"
 	"bufio"
 	"encoding/binary"
+	"fastrpc"
+	"io"
 	"state"
+	"sync"
 )
 
 type byteReader interface {
@@ -22,8 +22,8 @@ func (t *PrepareReply) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type PrepareReplyCache struct {
-	mu	sync.Mutex
-	cache	[]*PrepareReply
+	mu    sync.Mutex
+	cache []*PrepareReply
 }
 
 func NewPrepareReplyCache() *PrepareReplyCache {
@@ -161,8 +161,8 @@ func (t *PreAccept) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type PreAcceptCache struct {
-	mu	sync.Mutex
-	cache	[]*PreAccept
+	mu    sync.Mutex
+	cache []*PreAccept
 }
 
 func NewPreAcceptCache() *PreAcceptCache {
@@ -296,8 +296,8 @@ func (t *Accept) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type AcceptCache struct {
-	mu	sync.Mutex
-	cache	[]*Accept
+	mu    sync.Mutex
+	cache []*Accept
 }
 
 func NewAcceptCache() *AcceptCache {
@@ -416,8 +416,8 @@ func (t *AcceptReply) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type AcceptReplyCache struct {
-	mu	sync.Mutex
-	cache	[]*AcceptReply
+	mu    sync.Mutex
+	cache []*AcceptReply
 }
 
 func NewAcceptReplyCache() *AcceptReplyCache {
@@ -489,8 +489,8 @@ func (t *CommitShort) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type CommitShortCache struct {
-	mu	sync.Mutex
-	cache	[]*CommitShort
+	mu    sync.Mutex
+	cache []*CommitShort
 }
 
 func NewCommitShortCache() *CommitShortCache {
@@ -603,8 +603,8 @@ func (t *TryPreAccept) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type TryPreAcceptCache struct {
-	mu	sync.Mutex
-	cache	[]*TryPreAccept
+	mu    sync.Mutex
+	cache []*TryPreAccept
 }
 
 func NewTryPreAcceptCache() *TryPreAcceptCache {
@@ -738,8 +738,8 @@ func (t *Prepare) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type PrepareCache struct {
-	mu	sync.Mutex
-	cache	[]*Prepare
+	mu    sync.Mutex
+	cache []*Prepare
 }
 
 func NewPrepareCache() *PrepareCache {
@@ -815,8 +815,8 @@ func (t *PreAcceptReply) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type PreAcceptReplyCache struct {
-	mu	sync.Mutex
-	cache	[]*PreAcceptReply
+	mu    sync.Mutex
+	cache []*PreAcceptReply
 }
 
 func NewPreAcceptReplyCache() *PreAcceptReplyCache {
@@ -950,8 +950,8 @@ func (t *PreAcceptOK) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type PreAcceptOKCache struct {
-	mu	sync.Mutex
-	cache	[]*PreAcceptOK
+	mu    sync.Mutex
+	cache []*PreAcceptOK
 }
 
 func NewPreAcceptOKCache() *PreAcceptOKCache {
@@ -1009,8 +1009,8 @@ func (t *Commit) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type CommitCache struct {
-	mu	sync.Mutex
-	cache	[]*Commit
+	mu    sync.Mutex
+	cache []*Commit
 }
 
 func NewCommitCache() *CommitCache {
@@ -1138,8 +1138,8 @@ func (t *TryPreAcceptReply) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type TryPreAcceptReplyCache struct {
-	mu	sync.Mutex
-	cache	[]*TryPreAcceptReply
+	mu    sync.Mutex
+	cache []*TryPreAcceptReply
 }
 
 func NewTryPreAcceptReplyCache() *TryPreAcceptReplyCache {

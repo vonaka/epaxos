@@ -10,7 +10,6 @@ func NewChanWriter(writer chan byte) *ChanWriter {
 	return &ChanWriter{writer}
 }
 
-
 func (w *ChanWriter) Chan() <-chan byte {
 	return w.ch
 }

@@ -99,13 +99,12 @@ func registerWithMaster(masterAddr string) (int, []string, bool) {
 	args := &masterproto.RegisterArgs{*myAddr, *portnum}
 	var reply masterproto.RegisterReply
 
-	for done := false; !done; {
+	for {
 		log.Printf("connecting to: %v", masterAddr)
 		mcli, err := rpc.DialHTTP("tcp", masterAddr)
 		if err == nil {
 			err = mcli.Call("Master.Register", args, &reply)
 			if err == nil && reply.Ready == true {
-				done = true
 				break
 			}
 		}

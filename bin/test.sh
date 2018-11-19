@@ -13,11 +13,11 @@ SERVER=bin/server
 CLIENT=bin/client
 
 DIFF_TOOL=diff
-#DIFF_TOOL=merge
 
-failure=1
+FAILURE=1
 
 master() {
+    mkdir -p ${LOGS}
     touch ${LOGS}/m.txt
     ${MASTER} -N ${NSERVERS} >"${LOGS}/m.txt" 2>&1 &
     tail -f ${LOGS}/m.txt &
@@ -54,18 +54,15 @@ clients() {
     done
 
     ended=-1
-    while [ ${ended} != ${NCLIENTS} ]; do
+    while [[ ${ended} != ${NCLIENTS} ]] && [[ ${FAILURE} > 0 ]]; do
         ended=$(tail -n 1 logs/c_*.txt | grep "Test took" | wc -l)
-        sleep 1
-        if ((${failure} > 0)); then
-            sleep 20
-            leader=$(grep "new leader" ${LOGS}/m.txt | tail -n 1 | awk '{print $4}')
-            port=$(grep "node ${leader}" ${LOGS}/m.txt | sed -n 's/.*\(:.*\]\).*/\1/p' | sed 's/[]:]//g')
-            pid=$(ps -ef | grep "bin/server" | grep "${port}" | awk '{print $2}')
-            echo ">>>>> Injecting failure... (${leader}, ${port}, ${pid})"
-            kill -9 ${pid}
-            failure=$((failure - 1))
-        fi
+        sleep 20
+        leader=$(grep "new leader" ${LOGS}/m.txt | tail -n 1 | awk '{print $4}')
+        port=$(grep "node ${leader}" ${LOGS}/m.txt | sed -n 's/.*\(:.*\]\).*/\1/p' | sed 's/[]:]//g')
+        pid=$(ps -ef | grep "bin/server" | grep "${port}" | awk '{print $2}')
+        echo ">>>>> Injecting failure... (${leader}, ${port}, ${pid})"
+        kill -9 ${pid}
+        FAILURE=$((FAILURE - 1))
     done
     echo ">>>>> Client ended!"
 }

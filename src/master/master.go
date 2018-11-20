@@ -82,7 +82,7 @@ func (master *Master) run() {
 		}
 	}
 
-	for true {
+	for {
 		time.Sleep(3000 * 1000 * 1000)
 		new_leader := false
 		for i, node := range master.nodes {

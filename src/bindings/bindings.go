@@ -210,7 +210,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	}
 
 	err := errors.New("")
-	value := state.NIL()
+	var value state.Value
 
 	for err != nil {
 

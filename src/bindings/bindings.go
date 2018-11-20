@@ -169,10 +169,8 @@ func (b *Parameters) Write(key int64, value []byte) {
 
 func (b *Parameters) Read(key int64) []byte {
 	b.id++
-	args := genericsmrproto.Propose{b.id, state.Command{state.PUT, 0, state.NIL()}, 0}
-	args.CommandId = b.id
-	args.Command.K = state.Key(key)
-	args.Command.Op = state.GET
+	args := genericsmrproto.Propose{b.id,
+		state.Command{state.GET, state.Key(key), state.NIL()}, 0}
 
 	if b.verbose {
 		log.Println(args.Command.String())
@@ -183,12 +181,10 @@ func (b *Parameters) Read(key int64) []byte {
 
 func (b *Parameters) Scan(key int64, count int64) []byte {
 	b.id++
-	args := genericsmrproto.Propose{b.id, state.Command{state.PUT, 0, state.NIL()}, 0}
-	args.CommandId = b.id
-	args.Command.K = state.Key(key)
-	args.Command.V = make([]byte, 8)
+	args := genericsmrproto.Propose{b.id,
+		state.Command{state.SCAN, state.Key(key), make([]byte, 8)}, 0}
+
 	binary.LittleEndian.PutUint64(args.Command.V, uint64(count))
-	args.Command.Op = state.SCAN
 
 	if b.verbose {
 		log.Println(args.Command.String())

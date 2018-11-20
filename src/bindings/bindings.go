@@ -114,7 +114,7 @@ func (b *Parameters) Connect() error {
 	var toConnect []int
 	toConnect = append(toConnect, b.closestReplica)
 
-	if b.leaderless == false {
+	if !b.leaderless {
 		reply := new(masterproto.GetLeaderReply)
 		if err = master.Call("Master.GetLeader", new(masterproto.GetLeaderArgs), reply); err != nil {
 			log.Printf("Error making the GetLeader RPC\n")
@@ -157,11 +157,8 @@ func (b *Parameters) Disconnect() {
 // not idempotent in case of a failure
 func (b *Parameters) Write(key int64, value []byte) {
 	b.id++
-	args := genericsmrproto.Propose{b.id, state.Command{state.PUT, 0, state.NIL()}, 0}
-	args.CommandId = b.id
-	args.Command.K = state.Key(key)
-	args.Command.V = value
-	args.Command.Op = state.PUT
+	args := genericsmrproto.Propose{b.id,
+		state.Command{state.PUT, state.Key(key), value}, 0}
 
 	if b.verbose {
 		log.Println(args.Command.String())

@@ -99,19 +99,27 @@ func registerWithMaster(masterAddr string) (int, []string, bool) {
 	args := &masterproto.RegisterArgs{*myAddr, *portnum}
 	var reply masterproto.RegisterReply
 
+	log.Printf("connecting to: %v", masterAddr)
 	for {
-		log.Printf("connecting to: %v", masterAddr)
 		mcli, err := rpc.DialHTTP("tcp", masterAddr)
 		if err == nil {
-			err = mcli.Call("Master.Register", args, &reply)
-			if err == nil && reply.Ready == true {
-				break
+			for {
+				// This is an active wait, not cool.
+				err = mcli.Call("Master.Register", args, &reply)
+				if err == nil {
+					if reply.Ready {
+						break
+					}
+					time.Sleep(4)
+				} else {
+					log.Printf("%v", err)
+				}
 			}
-		}
-		if err != nil {
+			break
+		} else {
 			log.Printf("%v", err)
 		}
-		time.Sleep(1e9)
+		time.Sleep(4)
 	}
 
 	return reply.ReplicaId, reply.NodeList, reply.IsLeader

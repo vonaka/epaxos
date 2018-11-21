@@ -3,6 +3,7 @@ package yagpaxos
 import (
 	"fastrpc"
 	"genericsmr"
+	"log"
 	"state"
 	"sync"
 	"yagpaxosproto"
@@ -117,5 +118,69 @@ func NewReplica(replicaId int, peerAddrs []string,
 }
 
 func (r *Replica) run() {
+	go func() {
+		r.ConnectToPeers()
+		r.ComputeClosestPeers()
+		r.WaitForClientConnections()
+	}()
 
+	for !r.Shutdown {
+		select {
+		case propose := <-r.ProposeChan:
+			r.handlePropose(propose)
+		case m := <-r.cs.fastAckChan:
+			fastAck := m.(*yagpaxosproto.MFastAck)
+			r.handleFastAck(fastAck)
+		case m := <-r.cs.commitChan:
+			commit := m.(*yagpaxosproto.MCommit)
+			r.handleCommit(commit)
+		case m := <-r.cs.slowAckChan:
+			slowAck := m.(*yagpaxosproto.MSlowAck)
+			r.handleSlowAck(slowAck)
+		case m := <-r.cs.newLeaderChan:
+			newLeader := m.(*yagpaxosproto.MNewLeader)
+			r.handleNewLeader(newLeader)
+		case m := <-r.cs.newLeaderAckChan:
+			newLeaderAck := m.(*yagpaxosproto.MNewLeaderAck)
+			r.handleNewLeaderAck(newLeaderAck)
+		case m := <-r.cs.syncChan:
+			sync := m.(*yagpaxosproto.MSync)
+			r.handleSync(sync)
+		case m := <-r.cs.syncAckChan:
+			syncAck := m.(*yagpaxosproto.MSyncAck)
+			r.handleSyncAck(syncAck)
+		}
+	}
+}
+
+func (r *Replica) handlePropose(msg *genericsmr.Propose) {
+	log.Fatal("nyr")
+}
+
+func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
+	log.Fatal("nyr")
+}
+
+func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
+	log.Fatal("nyr")
+}
+
+func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
+	log.Fatal("nyr")
+}
+
+func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
+	log.Fatal("nyr")
+}
+
+func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
+	log.Fatal("nyr")
+}
+
+func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
+	log.Fatal("nyr")
+}
+
+func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
+	log.Fatal("nyr")
 }

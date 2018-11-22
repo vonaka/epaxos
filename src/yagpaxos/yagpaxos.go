@@ -17,18 +17,18 @@ type Replica struct {
 	ballot  int32
 	cballot int32
 
-	phase map[state.Id]phase
-	cmds  map[state.Id]state.Command
-	deps  map[state.Id](map[state.Id]bool)
+	phases map[int32]phase
+	cmds   map[int32]state.Command
+	deps   map[int32](map[int32]bool)
 
 	cs CommunicationSupply
 }
 
-type phase int
 type status int
+type phase int
 
 const (
-	LEADER phase = iota
+	LEADER status = iota
 	FOLLOWER
 	PREPARING
 )
@@ -68,13 +68,13 @@ func NewReplica(replicaId int, peerAddrs []string,
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
 			thrifty, exec, lread, dreply),
 
-		status:  status(FOLLOWER),
+		status:  FOLLOWER,
 		ballot:  0,
 		cballot: 0,
 
-		phase: make(map[state.Id]phase),
-		cmds:  make(map[state.Id]state.Command),
-		deps:  make(map[state.Id](map[state.Id]bool)),
+		phases: make(map[int32]phase),
+		cmds:   make(map[int32]state.Command),
+		deps:   make(map[int32](map[int32]bool)),
 
 		cs: CommunicationSupply{
 			//fastAcceptChan:   make(chan fastrpc.Serializable,
@@ -154,33 +154,71 @@ func (r *Replica) run() {
 }
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose) {
-	log.Fatal("nyr")
+	if r.status == PREPARING {
+		return
+	}
+
+	p, exists := r.phases[msg.CommandId]
+	if exists && p != START {
+		return
+	}
+
+	r.deps[msg.CommandId] = make(map[int32]bool)
+	for cid, p := range r.phases {
+		if p != START && inConflict(r.cmds[cid], msg.Command) {
+			r.deps[msg.CommandId][cid] = true
+		}
+	}
+	r.phases[msg.CommandId] = FAST_ACCEPT
+	r.cmds[msg.CommandId] = msg.Command
+
+	fastAck := &yagpaxosproto.MFastAck{
+		Replica:  r.Id,
+		Ballot:   r.ballot,
+		Instance: msg.CommandId,
+		// if I'm not mistaken,
+		// there is no need to copy these two maps:
+		Dep: r.deps[msg.CommandId],
+	}
+	r.sendToAll(fastAck, r.cs.fastAckRPC)
 }
 
 func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
-	log.Fatal("nyr")
+	log.Fatal("FastAck: nyr")
 }
 
 func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
-	log.Fatal("nyr")
+	log.Fatal("Commit: nyr")
 }
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
-	log.Fatal("nyr")
+	log.Fatal("SlowAck: nyr")
 }
 
 func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
-	log.Fatal("nyr")
+	log.Fatal("NewLeader: nyr")
 }
 
 func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
-	log.Fatal("nyr")
+	log.Fatal("NewLeaderAck: nyr")
 }
 
 func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
-	log.Fatal("nyr")
+	log.Fatal("Sync: nyr")
 }
 
 func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
-	log.Fatal("nyr")
+	log.Fatal("SyncAck: nyr")
+}
+
+func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
+	for p := int32(0); p < int32(r.N); p++ {
+		if r.Alive[p] {
+			r.SendMsg(p, rpc, msg)
+		}
+	}
+}
+
+func inConflict(c1 state.Command, c2 state.Command) bool {
+	return false
 }

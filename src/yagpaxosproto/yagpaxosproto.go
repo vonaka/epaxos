@@ -12,14 +12,14 @@ type MFastAck struct {
 	Replica  int32
 	Ballot   int32
 	Instance int32
-	Dep      map[state.Id]bool
+	Dep      map[int32]bool
 }
 
 type MCommit struct {
 	Replica  int32
 	Instance int32
 	Command  state.Command
-	Dep      map[state.Id]bool
+	Dep      map[int32]bool
 }
 
 type MSlowAck struct {
@@ -27,7 +27,7 @@ type MSlowAck struct {
 	Ballot   int32
 	Instance int32
 	Command  state.Command
-	Dep      map[state.Id]bool
+	Dep      map[int32]bool
 }
 
 type MNewLeader struct {
@@ -41,15 +41,15 @@ type MNewLeaderAck struct {
 	Cballot int32
 	Phase   int
 	Command state.Command
-	Dep     map[state.Id]bool
+	Dep     map[int32]bool
 }
 
 type MSync struct {
 	Replica int32
 	Ballot  int32
 	Phase   int
-	Cmds    map[state.Id]state.Command
-	Deps    map[state.Id](map[state.Id]bool)
+	Cmds    map[int32]state.Command
+	Deps    map[int32](map[int32]bool)
 }
 
 type MSyncAck struct {

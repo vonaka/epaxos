@@ -181,6 +181,10 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		Dep: r.deps[msg.CommandId],
 	}
 	r.sendToAll(fastAck, r.cs.fastAckRPC)
+	// for some strange architectural reason there is no way
+	// to send a message to yourself
+	// (see `PeerWriters` from `genericsmr.go`)
+	r.handleFastAck(fastAck)
 }
 
 func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {

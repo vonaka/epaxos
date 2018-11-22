@@ -12,14 +12,14 @@ type MFastAck struct {
 	Replica  int32
 	Ballot   int32
 	Instance int32
-	Dep      map[int32]bool
+	Dep      DepSet
 }
 
 type MCommit struct {
 	Replica  int32
 	Instance int32
 	Command  state.Command
-	Dep      map[int32]bool
+	Dep      DepSet
 }
 
 type MSlowAck struct {
@@ -27,7 +27,7 @@ type MSlowAck struct {
 	Ballot   int32
 	Instance int32
 	Command  state.Command
-	Dep      map[int32]bool
+	Dep      DepSet
 }
 
 type MNewLeader struct {
@@ -41,7 +41,7 @@ type MNewLeaderAck struct {
 	Cballot int32
 	Phase   int
 	Command state.Command
-	Dep     map[int32]bool
+	Dep     DepSet
 }
 
 type MSync struct {
@@ -49,7 +49,7 @@ type MSync struct {
 	Ballot  int32
 	Phase   int
 	Cmds    map[int32]state.Command
-	Deps    map[int32](map[int32]bool)
+	Deps    map[int32]DepSet
 }
 
 type MSyncAck struct {
@@ -188,4 +188,29 @@ func (m *MSyncAck) Unmarshal(r io.Reader) error {
 	e := gob.NewDecoder(r)
 
 	return e.Decode(m)
+}
+
+type DepSet map[int32]struct{}
+
+func NewDepSet() DepSet {
+	return make(DepSet)
+}
+
+func (d DepSet)Add(cmdId int32) {
+	d[cmdId] = struct{}{}
+}
+
+func (d1 DepSet)Equals(d2 DepSet) bool {
+	if len(d1) != len(d2) {
+		return false
+	}
+
+	for cmdId, _ := range d1 {
+		_, exists := d1[cmdId]
+		if !exists {
+			return false
+		}
+	}
+
+	return true
 }

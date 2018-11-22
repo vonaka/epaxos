@@ -19,7 +19,7 @@ type Replica struct {
 
 	phases map[int32]phase
 	cmds   map[int32]state.Command
-	deps   map[int32](map[int32]bool)
+	deps   map[int32]yagpaxosproto.DepSet
 
 	cs CommunicationSupply
 }
@@ -74,7 +74,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 
 		phases: make(map[int32]phase),
 		cmds:   make(map[int32]state.Command),
-		deps:   make(map[int32](map[int32]bool)),
+		deps:   make(map[int32]yagpaxosproto.DepSet),
 
 		cs: CommunicationSupply{
 			//fastAcceptChan:   make(chan fastrpc.Serializable,
@@ -127,33 +127,36 @@ func (r *Replica) run() {
 	for !r.Shutdown {
 		select {
 		case propose := <-r.ProposeChan:
-			r.handlePropose(propose)
+			go r.handlePropose(propose)
 		case m := <-r.cs.fastAckChan:
 			fastAck := m.(*yagpaxosproto.MFastAck)
-			r.handleFastAck(fastAck)
+			go r.handleFastAck(fastAck)
 		case m := <-r.cs.commitChan:
 			commit := m.(*yagpaxosproto.MCommit)
-			r.handleCommit(commit)
+			go r.handleCommit(commit)
 		case m := <-r.cs.slowAckChan:
 			slowAck := m.(*yagpaxosproto.MSlowAck)
-			r.handleSlowAck(slowAck)
+			go r.handleSlowAck(slowAck)
 		case m := <-r.cs.newLeaderChan:
 			newLeader := m.(*yagpaxosproto.MNewLeader)
-			r.handleNewLeader(newLeader)
+			go r.handleNewLeader(newLeader)
 		case m := <-r.cs.newLeaderAckChan:
 			newLeaderAck := m.(*yagpaxosproto.MNewLeaderAck)
-			r.handleNewLeaderAck(newLeaderAck)
+			go r.handleNewLeaderAck(newLeaderAck)
 		case m := <-r.cs.syncChan:
 			sync := m.(*yagpaxosproto.MSync)
-			r.handleSync(sync)
+			go r.handleSync(sync)
 		case m := <-r.cs.syncAckChan:
 			syncAck := m.(*yagpaxosproto.MSyncAck)
-			r.handleSyncAck(syncAck)
+			go r.handleSyncAck(syncAck)
 		}
 	}
 }
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose) {
+	r.Lock()
+	defer r.Unlock()
+
 	if r.status != LEADER && r.status != FOLLOWER {
 		return
 	}
@@ -163,10 +166,10 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		return
 	}
 
-	r.deps[msg.CommandId] = make(map[int32]bool)
+	r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
 	for cid, p := range r.phases {
 		if p != START && inConflict(r.cmds[cid], msg.Command) {
-			r.deps[msg.CommandId][cid] = true
+			r.deps[msg.CommandId].Add(cid)
 		}
 	}
 	r.phases[msg.CommandId] = FAST_ACCEPT
@@ -184,7 +187,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	// for some strange architectural reason there is no way
 	// to send a message to yourself
 	// (see `PeerWriters` from `genericsmr.go`)
-	r.handleFastAck(fastAck)
+	go r.handleFastAck(fastAck)
 }
 
 func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
@@ -192,6 +195,9 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 }
 
 func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
+	r.Lock()
+	defer r.Unlock()
+
 	if r.status != LEADER && r.status != FOLLOWER {
 		return
 	}

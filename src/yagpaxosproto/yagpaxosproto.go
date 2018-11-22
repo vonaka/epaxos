@@ -39,15 +39,15 @@ type MNewLeaderAck struct {
 	Replica int32
 	Ballot  int32
 	Cballot int32
-	Phase   int
-	Command state.Command
-	Dep     DepSet
+	Phases  map[int32]int
+	Cmds    map[int32]state.Command
+	Deps    map[int32]DepSet
 }
 
 type MSync struct {
 	Replica int32
 	Ballot  int32
-	Phase   int
+	Phases  map[int32]int
 	Cmds    map[int32]state.Command
 	Deps    map[int32]DepSet
 }

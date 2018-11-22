@@ -238,3 +238,52 @@ func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
 func inConflict(c1 state.Command, c2 state.Command) bool {
 	return false
 }
+
+type quorum struct {
+	size     int
+	elements []interface{}
+}
+
+type quorumSet struct {
+	neededSize int
+	quorums    map[int]*quorum
+	related    func(interface{}, interface{}) bool
+	out        chan []interface{}
+}
+
+func (qs *quorumSet) add(e interface{}) {
+	if qs.neededSize < 1 {
+		return
+	}
+
+	if len(qs.quorums) == 0 {
+		qs.quorums = make(map[int]*quorum)
+		qs.quorums[0] = &quorum{
+			size:     1,
+			elements: make([]interface{}, qs.neededSize),
+		}
+		qs.quorums[0].elements[0] = e
+
+		if qs.neededSize < 2 {
+			qs.out <- qs.quorums[0].elements
+		}
+		return
+	}
+
+	for _, q := range qs.quorums {
+		if qs.related(q.elements[0], e) {
+			q.elements[q.size] = e
+			q.size++
+			if q.size == qs.neededSize {
+				qs.out <- q.elements
+			}
+			return
+		}
+	}
+
+	qs.quorums[len(qs.quorums)] = &quorum{
+		size:     1,
+		elements: make([]interface{}, qs.neededSize),
+	}
+	qs.quorums[len(qs.quorums)-1].elements[0] = e
+}

@@ -154,7 +154,7 @@ func (r *Replica) run() {
 }
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose) {
-	if r.status == PREPARING {
+	if r.status != LEADER && r.status != FOLLOWER {
 		return
 	}
 
@@ -188,7 +188,13 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 }
 
 func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
-	log.Fatal("Commit: nyr")
+	if r.status != LEADER && r.status != FOLLOWER {
+		return
+	}
+
+	r.phases[msg.Instance] = COMMIT
+	r.cmds[msg.Instance] = msg.Command
+	r.deps[msg.Instance] = msg.Dep
 }
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {

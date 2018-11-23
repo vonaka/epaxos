@@ -61,7 +61,7 @@ func main() {
 }
 
 func (master *Master) run() {
-	for true {
+	for {
 		master.lock.Lock()
 		if len(master.nodeList) == master.N {
 			master.lock.Unlock()

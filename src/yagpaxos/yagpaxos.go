@@ -3,6 +3,7 @@ package yagpaxos
 import (
 	"fastrpc"
 	"genericsmr"
+	"genericsmrproto"
 	"log"
 	"state"
 	"sync"
@@ -249,7 +250,19 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 }
 
 func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
-	log.Fatal("NewLeader: nyr")
+	r.Lock()
+	defer r.Unlock()
+
+	if r.ballot >= msg.Ballot {
+		return
+	}
+
+	r.ballot = msg.Ballot
+	if leader(r.ballot, r.N) == r.Id {
+		r.status = LEADER
+	} else {
+		r.status = FOLLOWER
+	}
 }
 
 func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
@@ -262,6 +275,27 @@ func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
 
 func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
 	log.Fatal("SyncAck: nyr")
+}
+
+func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
+	reply *genericsmrproto.BeTheLeaderReply) error {
+	r.Lock()
+	defer r.Unlock()
+
+	oldLeader := leader(r.ballot, r.N)
+	newBallot := r.ballot - oldLeader + r.Id
+	if r.Id <= oldLeader {
+		newBallot += int32(r.N)
+	}
+
+	newLeader := &yagpaxosproto.MNewLeader {
+		Replica: r.Id,
+		Ballot:  newBallot,
+	}
+	r.sendToAll(newLeader, r.cs.newLeaderRPC)
+	go r.handleNewLeader(newLeader)
+
+	return nil
 }
 
 func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {

@@ -11,7 +11,7 @@ import (
 
 type Replica struct {
 	*genericsmr.Replica
-	*sync.Mutex
+	sync.Mutex
 
 	status  status
 	ballot  int32
@@ -270,6 +270,10 @@ func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
 			r.SendMsg(p, rpc, msg)
 		}
 	}
+}
+
+func leader(ballot int32, repNum int) int32 {
+	return ballot % int32(repNum)
 }
 
 func inConflict(c1 state.Command, c2 state.Command) bool {

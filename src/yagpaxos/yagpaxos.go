@@ -21,6 +21,8 @@ type Replica struct {
 	cmds   map[int32]state.Command
 	deps   map[int32]yagpaxosproto.DepSet
 
+	slowAckQuorumSets map[int32]*quorumSet
+
 	cs CommunicationSupply
 }
 
@@ -42,7 +44,6 @@ const (
 )
 
 type CommunicationSupply struct {
-	//fastAcceptChan   chan fastrpc.Serializable
 	fastAckChan      chan fastrpc.Serializable
 	commitChan       chan fastrpc.Serializable
 	slowAckChan      chan fastrpc.Serializable
@@ -51,7 +52,6 @@ type CommunicationSupply struct {
 	syncChan         chan fastrpc.Serializable
 	syncAckChan      chan fastrpc.Serializable
 
-	//fastAcceptRPC    uint8
 	fastAckRPC      uint8
 	commitRPC       uint8
 	slowAckRPC      uint8
@@ -76,9 +76,9 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cmds:   make(map[int32]state.Command),
 		deps:   make(map[int32]yagpaxosproto.DepSet),
 
+		slowAckQuorumSets: make(map[int32]*quorumSet),
+
 		cs: CommunicationSupply{
-			//fastAcceptChan:   make(chan fastrpc.Serializable,
-			//	genericsmr.CHAN_BUFFER_SIZE),
 			fastAckChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 			commitChan: make(chan fastrpc.Serializable,
@@ -96,7 +96,6 @@ func NewReplica(replicaId int, peerAddrs []string,
 		},
 	}
 
-	//r.fastAcceptRPC = r.RegisterRPC()
 	r.cs.fastAckRPC =
 		r.RegisterRPC(new(yagpaxosproto.MFastAck), r.cs.fastAckChan)
 	r.cs.commitRPC =
@@ -208,7 +207,48 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 }
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
-	log.Fatal("SlowAck: nyr")
+	r.Lock()
+
+	if r.status != LEADER || msg.Ballot != r.ballot {
+		r.Unlock()
+		return
+	}
+
+	qs, exists := r.slowAckQuorumSets[msg.Instance]
+	if !exists {
+		related := func (e1 interface{}, e2 interface{}) bool {
+			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
+			slowAck2 := e2.(*yagpaxosproto.MSlowAck)
+			return slowAck1.Dep.Equals(slowAck2.Dep)
+		}
+		r.slowAckQuorumSets[msg.Instance] =
+			newQuorumSet(r.N >> 1, related)
+		qs = r.slowAckQuorumSets[msg.Instance]
+	}
+
+	qs.add(msg)
+	r.Unlock()
+	es := qs.wait(r)
+	if es == nil {
+		return
+	}
+
+	for _, e := range es {
+		// if quorum contains leader
+		if (e.(*yagpaxosproto.MSlowAck)).Replica == r.Id {
+			r.Lock()
+			commit := &yagpaxosproto.MCommit{
+				Replica:  r.Id,
+				Instance: msg.Instance,
+				Command:  r.cmds[msg.Instance],
+				Dep:      r.deps[msg.Instance],
+			}
+			r.sendToAll(commit, r.cs.commitRPC)
+			go r.handleCommit(commit)
+			r.Unlock()
+			return
+		}
+	}
 }
 
 func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
@@ -240,6 +280,7 @@ func inConflict(c1 state.Command, c2 state.Command) bool {
 }
 
 type quorum struct {
+	// not the desired size, but the actual one
 	size     int
 	elements []interface{}
 }
@@ -249,24 +290,24 @@ type quorumSet struct {
 	quorums    map[int]*quorum
 	related    func(interface{}, interface{}) bool
 	out        chan []interface{}
+	stop       chan interface{}
+	waiting    bool
+}
+
+func newQuorumSet(size int,
+	relation func(interface{}, interface{}) bool) *quorumSet {
+	return &quorumSet{
+		neededSize: size,
+		quorums:    make(map[int]*quorum),
+		related:    relation,
+		out:        make(chan []interface{}),
+		stop:       make(chan interface{}),
+		waiting:    false,
+	}
 }
 
 func (qs *quorumSet) add(e interface{}) {
 	if qs.neededSize < 1 {
-		return
-	}
-
-	if len(qs.quorums) == 0 {
-		qs.quorums = make(map[int]*quorum)
-		qs.quorums[0] = &quorum{
-			size:     1,
-			elements: make([]interface{}, qs.neededSize),
-		}
-		qs.quorums[0].elements[0] = e
-
-		if qs.neededSize < 2 {
-			qs.out <- qs.quorums[0].elements
-		}
 		return
 	}
 
@@ -286,4 +327,37 @@ func (qs *quorumSet) add(e interface{}) {
 		elements: make([]interface{}, qs.neededSize),
 	}
 	qs.quorums[len(qs.quorums)-1].elements[0] = e
+
+	if qs.neededSize < 2 {
+		qs.out <- qs.quorums[len(qs.quorums)-1].elements
+	}
+}
+
+func (qs *quorumSet) wait(m interface{Lock(); Unlock()}) []interface{} {
+	if m != nil {
+		m.Lock()
+	}
+
+	if qs.waiting {
+		if m != nil {
+			m.Unlock()
+		}
+		return nil
+	}
+
+	qs.waiting = true
+	defer func() { qs.waiting = false }()
+
+	if m != nil {
+		m.Unlock()
+	}
+
+	select {
+	case q := <-qs.out:
+		return q
+	case <-qs.stop:
+		return nil
+	}
+
+	return nil
 }

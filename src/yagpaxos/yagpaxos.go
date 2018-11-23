@@ -228,7 +228,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	}()
 	es, err := qs.wait(r)
 	r.Lock()
-	if es == nil {
+	if es == nil && err == nil {
 		return
 	}
 
@@ -264,6 +264,9 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		go r.handleCommit(commit)
 	} else {
 		es, esSize := qs.getLargestSet()
+		if esSize == 0 {
+			return
+		}
 		leaderMsg := getLeaderMsg(es)
 		// TODO: get another set if there is no leader
 		if esSize < slowQuorumSize || leaderMsg == nil {

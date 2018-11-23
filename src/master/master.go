@@ -80,6 +80,15 @@ func (master *Master) run() {
 		if err != nil {
 			log.Fatalf("Error connecting to replica %d (%v)\n", i, addr)
 		}
+
+		if master.leader[i] {
+			err = master.nodes[i].Call("Replica.BeTheLeader",
+				new(genericsmrproto.BeTheLeaderArgs),
+				new(genericsmrproto.BeTheLeaderReply))
+			if err != nil {
+				log.Fatal("Not today Zurg!")
+			}
+		}
 	}
 
 	for {

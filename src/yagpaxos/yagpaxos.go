@@ -1,12 +1,15 @@
 package yagpaxos
 
 import (
+	"errors"
 	"fastrpc"
 	"genericsmr"
 	"genericsmrproto"
 	"log"
+	"math"
 	"state"
 	"sync"
+	"time"
 	"yagpaxosproto"
 )
 
@@ -23,6 +26,7 @@ type Replica struct {
 	deps   map[int32]yagpaxosproto.DepSet
 
 	slowAckQuorumSets map[int32]*quorumSet
+	fastAckQuorumSets map[int32]*quorumSet
 
 	cs CommunicationSupply
 }
@@ -78,6 +82,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		deps:   make(map[int32]yagpaxosproto.DepSet),
 
 		slowAckQuorumSets: make(map[int32]*quorumSet),
+		fastAckQuorumSets: make(map[int32]*quorumSet),
 
 		cs: CommunicationSupply{
 			fastAckChan: make(chan fastrpc.Serializable,
@@ -179,6 +184,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		Replica:  r.Id,
 		Ballot:   r.ballot,
 		Instance: msg.CommandId,
+		Command:  msg.Command,
 		// if I'm not mistaken,
 		// there is no need to copy these two maps:
 		Dep: r.deps[msg.CommandId],
@@ -191,7 +197,98 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 }
 
 func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
-	log.Fatal("FastAck: nyr")
+	r.Lock()
+	defer r.Unlock()
+
+	if (r.status != LEADER && r.status != FOLLOWER) ||
+		r.ballot != msg.Ballot {
+		return
+	}
+
+	fastQuorumSize := int(math.Ceil(3 * float64(r.N) / 4))
+	slowQuorumSize := r.N >> 1
+
+	qs, exists := r.fastAckQuorumSets[msg.Instance]
+	if !exists {
+		related := func(e1 interface{}, e2 interface{}) bool {
+			fastAck1 := e1.(*yagpaxosproto.MFastAck)
+			fastAck2 := e2.(*yagpaxosproto.MFastAck)
+			return fastAck1.Dep.Equals(fastAck2.Dep)
+		}
+		r.fastAckQuorumSets[msg.Instance] =
+			newQuorumSet(fastQuorumSize, related)
+		qs = r.fastAckQuorumSets[msg.Instance]
+	}
+
+	qs.add(msg)
+	r.Unlock()
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		qs.stop <- nil
+	}()
+	es, err := qs.wait(r)
+	r.Lock()
+	if es == nil {
+		return
+	}
+
+	defer func() {
+		delete(r.fastAckQuorumSets, msg.Instance)
+	}()
+
+	leaderId := leader(r.ballot, r.N)
+	getLeaderMsg := func(es []interface{}) *yagpaxosproto.MFastAck {
+		for _, e := range es {
+			if (e.(*yagpaxosproto.MFastAck)).Replica == leaderId {
+				return e.(*yagpaxosproto.MFastAck)
+			}
+		}
+		return nil
+	}
+
+	if err == nil {
+		leaderMsg := getLeaderMsg(es)
+		if leaderMsg == nil {
+			return
+		}
+
+		commit := &yagpaxosproto.MCommit{
+			Replica:  r.Id,
+			Instance: msg.Instance,
+			Command:  msg.Command,
+			Dep:      r.deps[msg.Instance],
+		}
+		// TODO: do not send commit to all peers
+		// if follower
+		r.sendToAll(commit, r.cs.commitRPC)
+		go r.handleCommit(commit)
+	} else {
+		es, esSize := qs.getLargestSet()
+		leaderMsg := getLeaderMsg(es)
+		// TODO: get another set if there is no leader
+		if esSize < slowQuorumSize || leaderMsg == nil {
+			return
+		}
+
+		r.phases[msg.Instance] = SLOW_ACCEPT
+		if r.status == FOLLOWER {
+			r.cmds[msg.Instance] = leaderMsg.Command
+			r.deps[msg.Instance] = leaderMsg.Dep
+		}
+
+		slowAck := &yagpaxosproto.MSlowAck{
+			Replica:  r.Id,
+			Ballot:   r.ballot,
+			Instance: msg.Instance,
+			Command:  r.cmds[msg.Instance],
+			Dep:      r.deps[msg.Instance],
+		}
+		if r.status == FOLLOWER {
+			r.SendMsg(leaderMsg.Replica, r.cs.slowAckRPC, slowAck)
+		} else {
+			go r.handleSlowAck(slowAck)
+		}
+	}
 }
 
 func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
@@ -209,9 +306,9 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	r.Lock()
+	defer r.Unlock()
 
 	if r.status != LEADER || msg.Ballot != r.ballot {
-		r.Unlock()
 		return
 	}
 
@@ -229,13 +326,17 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 
 	qs.add(msg)
 	r.Unlock()
-	es := qs.wait(r)
+	es, _ := qs.wait(r)
+	r.Lock()
 	if es == nil {
 		return
 	}
 
+	defer func() {
+		delete(r.slowAckQuorumSets, msg.Instance)
+	}()
+
 	if (es[0].(*yagpaxosproto.MSlowAck)).Dep.Equals(r.deps[msg.Instance]) {
-		r.Lock()
 		commit := &yagpaxosproto.MCommit{
 			Replica:  r.Id,
 			Instance: msg.Instance,
@@ -244,8 +345,6 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 		}
 		r.sendToAll(commit, r.cs.commitRPC)
 		go r.handleCommit(commit)
-		r.Unlock()
-		return
 	}
 }
 
@@ -368,10 +467,24 @@ func (qs *quorumSet) add(e interface{}) {
 	}
 }
 
+func (qs *quorumSet) getLargestSet() ([]interface{}, int) {
+	size := 0
+	var set *[]interface{} = nil
+
+	for _, q := range qs.quorums {
+		if size < q.size {
+			size = q.size
+			set = &q.elements
+		}
+	}
+
+	return *set, size
+}
+
 func (qs *quorumSet) wait(m interface {
 	Lock()
 	Unlock()
-}) []interface{} {
+}) ([]interface{}, error) {
 	if m != nil {
 		m.Lock()
 	}
@@ -380,7 +493,7 @@ func (qs *quorumSet) wait(m interface {
 		if m != nil {
 			m.Unlock()
 		}
-		return nil
+		return nil, nil
 	}
 
 	qs.waiting = true
@@ -392,10 +505,10 @@ func (qs *quorumSet) wait(m interface {
 
 	select {
 	case q := <-qs.out:
-		return q
+		return q, nil
 	case <-qs.stop:
-		return nil
+		return nil, errors.New("Stopped")
 	}
 
-	return nil
+	return nil, nil
 }

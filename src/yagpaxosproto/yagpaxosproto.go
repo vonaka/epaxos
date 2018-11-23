@@ -12,6 +12,7 @@ type MFastAck struct {
 	Replica  int32
 	Ballot   int32
 	Instance int32
+	Command  state.Command
 	Dep      DepSet
 }
 

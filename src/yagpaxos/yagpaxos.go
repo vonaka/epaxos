@@ -216,13 +216,13 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 
 	qs, exists := r.slowAckQuorumSets[msg.Instance]
 	if !exists {
-		related := func (e1 interface{}, e2 interface{}) bool {
+		related := func(e1 interface{}, e2 interface{}) bool {
 			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
 			slowAck2 := e2.(*yagpaxosproto.MSlowAck)
 			return slowAck1.Dep.Equals(slowAck2.Dep)
 		}
 		r.slowAckQuorumSets[msg.Instance] =
-			newQuorumSet(r.N >> 1, related)
+			newQuorumSet(r.N>>1, related)
 		qs = r.slowAckQuorumSets[msg.Instance]
 	}
 
@@ -330,7 +330,10 @@ func (qs *quorumSet) add(e interface{}) {
 	}
 }
 
-func (qs *quorumSet) wait(m interface{Lock(); Unlock()}) []interface{} {
+func (qs *quorumSet) wait(m interface {
+	Lock()
+	Unlock()
+}) []interface{} {
 	if m != nil {
 		m.Lock()
 	}

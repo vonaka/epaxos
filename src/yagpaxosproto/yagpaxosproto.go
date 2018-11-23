@@ -196,11 +196,11 @@ func NewDepSet() DepSet {
 	return make(DepSet)
 }
 
-func (d DepSet)Add(cmdId int32) {
+func (d DepSet) Add(cmdId int32) {
 	d[cmdId] = struct{}{}
 }
 
-func (d1 DepSet)Equals(d2 DepSet) bool {
+func (d1 DepSet) Equals(d2 DepSet) bool {
 	if len(d1) != len(d2) {
 		return false
 	}

@@ -288,7 +288,7 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 		newBallot += int32(r.N)
 	}
 
-	newLeader := &yagpaxosproto.MNewLeader {
+	newLeader := &yagpaxosproto.MNewLeader{
 		Replica: r.Id,
 		Ballot:  newBallot,
 	}

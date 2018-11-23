@@ -233,21 +233,18 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 		return
 	}
 
-	for _, e := range es {
-		// if quorum contains leader
-		if (e.(*yagpaxosproto.MSlowAck)).Replica == r.Id {
-			r.Lock()
-			commit := &yagpaxosproto.MCommit{
-				Replica:  r.Id,
-				Instance: msg.Instance,
-				Command:  r.cmds[msg.Instance],
-				Dep:      r.deps[msg.Instance],
-			}
-			r.sendToAll(commit, r.cs.commitRPC)
-			go r.handleCommit(commit)
-			r.Unlock()
-			return
+	if (es[0].(*yagpaxosproto.MSlowAck)).Dep.Equals(r.deps[msg.Instance]) {
+		r.Lock()
+		commit := &yagpaxosproto.MCommit{
+			Replica:  r.Id,
+			Instance: msg.Instance,
+			Command:  r.cmds[msg.Instance],
+			Dep:      r.deps[msg.Instance],
 		}
+		r.sendToAll(commit, r.cs.commitRPC)
+		go r.handleCommit(commit)
+		r.Unlock()
+		return
 	}
 }
 

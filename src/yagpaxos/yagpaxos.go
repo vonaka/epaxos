@@ -6,6 +6,7 @@ import (
 	"genericsmr"
 	"genericsmrproto"
 	"log"
+	"sort"
 	"state"
 	"sync"
 	"time"
@@ -262,13 +263,18 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		r.sendToAll(commit, r.cs.commitRPC)
 		go r.handleCommit(commit)
 	} else {
-		es, esSize := qs.getLargestSet()
-		if esSize == 0 {
-			return
+		var leaderMsg *yagpaxosproto.MFastAck
+		qs.sortBySize()
+		for _, q := range qs.quorums {
+			if q.size < slowQuorumSize {
+				return
+			}
+			leaderMsg = getLeaderMsg(q.elements)
+			if leaderMsg != nil {
+				break
+			}
 		}
-		leaderMsg := getLeaderMsg(es)
-		// TODO: get another set if there is no leader
-		if esSize < slowQuorumSize || leaderMsg == nil {
+		if leaderMsg == nil {
 			return
 		}
 
@@ -481,6 +487,12 @@ func (qs *quorumSet) getLargestSet() ([]interface{}, int) {
 	}
 
 	return set, size
+}
+
+func (qs *quorumSet) sortBySize() {
+	sort.Slice(qs.quorums, func (i, j int) bool {
+		return qs.quorums[i].size > qs.quorums[j].size
+	})
 }
 
 func (qs *quorumSet) wait(m interface {

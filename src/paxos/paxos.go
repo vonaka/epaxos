@@ -139,11 +139,11 @@ func (r *Replica) sync() {
 /* RPC to be called by master */
 
 func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs, reply *genericsmrproto.BeTheLeaderReply) error {
-	r.Mutex.Lock()
+	r.M.Lock()
 	r.IsLeader = true
 	log.Println("I am the leader")
 	time.Sleep(5 * time.Second) // wait that the connection is actually lost
-	r.Mutex.Unlock()
+	r.M.Unlock()
 	return nil
 }
 

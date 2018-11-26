@@ -462,8 +462,8 @@ func (r *Replica) executeCommands() {
 			}
 		}
 		if !executed {
-			r.Mutex.Lock()
-			r.Mutex.Unlock() // FIXME for cache coherence
+			r.M.Lock()
+			r.M.Unlock() // FIXME for cache coherence
 			time.Sleep(SLEEP_TIME_NS)
 		}
 		//log.Println(r.ExecedUpTo, " ", r.crtInstance)
@@ -669,13 +669,13 @@ func (r *Replica) clearHashtables() {
 }
 
 func (r *Replica) updateCommitted(replica int32) {
-	r.Mutex.Lock()
+	r.M.Lock()
 	for r.InstanceSpace[replica][r.CommittedUpTo[replica]+1] != nil &&
 		(r.InstanceSpace[replica][r.CommittedUpTo[replica]+1].Status == epaxosproto.COMMITTED ||
 			r.InstanceSpace[replica][r.CommittedUpTo[replica]+1].Status == epaxosproto.EXECUTED) {
 		r.CommittedUpTo[replica] = r.CommittedUpTo[replica] + 1
 	}
-	r.Mutex.Unlock()
+	r.M.Unlock()
 }
 
 func (r *Replica) updateConflicts(cmds []state.Command, replica int32, instance int32, seq int32) {
@@ -786,10 +786,10 @@ func (r *Replica) handlePropose(propose *genericsmr.Propose) {
 	if batchSize > MAX_BATCH {
 		batchSize = MAX_BATCH
 	}
-	r.Mutex.Lock()
+	r.M.Lock()
 	r.Stats.M["totalBatching"]++
 	r.Stats.M["totalBatchingSize"] += batchSize
-	r.Mutex.Unlock()
+	r.M.Unlock()
 
 	instNo := r.crtInstance[r.Id]
 	r.crtInstance[r.Id]++
@@ -1017,9 +1017,9 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 	if (r.N <= 3 && !r.Thrifty) || inst.lb.preAcceptOKs > 1 {
 		inst.lb.allEqual = inst.lb.allEqual && equal
 		if !equal {
-			r.Mutex.Lock()
+			r.M.Lock()
 			r.Stats.M["conflicted"]++
-			r.Mutex.Unlock()
+			r.M.Unlock()
 		}
 	}
 
@@ -1039,9 +1039,9 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 
 	//can we commit on the fast path?
 	if inst.lb.preAcceptOKs >= (r.fastQuorumSize()-1) && inst.lb.allEqual && allCommitted && isInitialBallot(inst.ballot) {
-		r.Mutex.Lock()
+		r.M.Lock()
 		r.Stats.M["fast"]++
-		r.Mutex.Unlock()
+		r.M.Unlock()
 		dlog.Printf("Fast path %d.%d, w. deps %d\n", pareply.Replica, pareply.Instance, pareply.Deps)
 		r.InstanceSpace[pareply.Replica][pareply.Instance].Status = epaxosproto.COMMITTED
 		r.updateCommitted(pareply.Replica)
@@ -1063,19 +1063,19 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 		r.sync() //is this necessary here?
 
 		r.bcastCommit(pareply.Replica, pareply.Instance, inst.Cmds, inst.Seq, inst.Deps)
-		r.Mutex.Lock()
+		r.M.Lock()
 		r.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
-		r.Mutex.Unlock()
+		r.M.Unlock()
 	} else if inst.lb.preAcceptOKs >= r.fastQuorumSize()-1 {
 		if !allCommitted {
-			r.Mutex.Lock()
+			r.M.Lock()
 			r.Stats.M["weird"]++
-			r.Mutex.Unlock()
+			r.M.Unlock()
 		}
 		dlog.Printf("Slow path %d.%d\n", pareply.Replica, pareply.Instance)
-		r.Mutex.Lock()
+		r.M.Lock()
 		r.Stats.M["slow"]++
-		r.Mutex.Unlock()
+		r.M.Unlock()
 		inst.Status = epaxosproto.ACCEPTED
 		r.bcastAccept(pareply.Replica, pareply.Instance, inst.ballot, int32(len(inst.Cmds)), inst.Seq, inst.Deps)
 	} else {
@@ -1197,9 +1197,9 @@ func (r *Replica) handleAcceptReply(areply *epaxosproto.AcceptReply) {
 		r.sync() //is this necessary here?
 
 		r.bcastCommit(areply.Replica, areply.Instance, inst.Cmds, inst.Seq, inst.Deps)
-		r.Mutex.Lock()
+		r.M.Lock()
 		r.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
-		r.Mutex.Unlock()
+		r.M.Unlock()
 	} else {
 		dlog.Println("Not enough")
 	}
@@ -1316,11 +1316,11 @@ func (r *Replica) handleCommitShort(commit *epaxosproto.CommitShort) {
 ***********************************************************************/
 
 func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs, reply *genericsmrproto.BeTheLeaderReply) error {
-	r.Mutex.Lock()
+	r.M.Lock()
 	r.IsLeader = true
 	log.Println("I am the leader")
 	time.Sleep(5 * time.Second) // wait that the connection is actually lost
-	r.Mutex.Unlock()
+	r.M.Unlock()
 	return nil
 }
 
@@ -1431,9 +1431,9 @@ func (r *Replica) handlePrepareReply(preply *epaxosproto.PrepareReply) {
 			preply.Deps,
 			nil, 0, 0, nil, 0}
 		r.bcastCommit(preply.Replica, preply.Instance, inst.Cmds, preply.Seq, preply.Deps)
-		r.Mutex.Lock()
+		r.M.Lock()
 		r.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
-		r.Mutex.Unlock()
+		r.M.Unlock()
 		//TODO: check if we should send notifications to clients
 		dlog.Println("Already committed")
 		return

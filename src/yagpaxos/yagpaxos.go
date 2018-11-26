@@ -407,9 +407,13 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 
 func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
 	for p := int32(0); p < int32(r.N); p++ {
+		r.M.Lock()
 		if r.Alive[p] {
+			r.M.Unlock()
 			r.SendMsg(p, rpc, msg)
+			r.M.Lock()
 		}
+		r.M.Unlock()
 	}
 }
 

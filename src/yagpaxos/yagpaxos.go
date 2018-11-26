@@ -205,8 +205,8 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		return
 	}
 
-	fastQuorumSize := 3 * r.N / 4 + 1
-	slowQuorumSize := r.N / 2 + 1
+	fastQuorumSize := 3*r.N/4 + 1
+	slowQuorumSize := r.N/2 + 1
 
 	qs, exists := r.fastAckQuorumSets[msg.Instance]
 	if !exists {
@@ -490,7 +490,7 @@ func (qs *quorumSet) getLargestSet() ([]interface{}, int) {
 }
 
 func (qs *quorumSet) sortBySize() {
-	sort.Slice(qs.quorums, func (i, j int) bool {
+	sort.Slice(qs.quorums, func(i, j int) bool {
 		return qs.quorums[i].size > qs.quorums[j].size
 	})
 }

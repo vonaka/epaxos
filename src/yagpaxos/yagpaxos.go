@@ -472,16 +472,16 @@ func (qs *quorumSet) add(e interface{}) {
 
 func (qs *quorumSet) getLargestSet() ([]interface{}, int) {
 	size := 0
-	var set *[]interface{} = nil
+	var set []interface{}
 
 	for _, q := range qs.quorums {
 		if size < q.size {
 			size = q.size
-			set = &q.elements
+			set = q.elements
 		}
 	}
 
-	return *set, size
+	return set, size
 }
 
 func (qs *quorumSet) wait(m interface {

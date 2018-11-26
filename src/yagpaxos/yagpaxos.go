@@ -6,7 +6,6 @@ import (
 	"genericsmr"
 	"genericsmrproto"
 	"log"
-	"math"
 	"state"
 	"sync"
 	"time"
@@ -205,8 +204,8 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		return
 	}
 
-	fastQuorumSize := int(math.Ceil(3 * float64(r.N) / 4))
-	slowQuorumSize := r.N >> 1
+	fastQuorumSize := 3 * r.N / 4 + 1
+	slowQuorumSize := r.N / 2 + 1
 
 	qs, exists := r.fastAckQuorumSets[msg.Instance]
 	if !exists {
@@ -424,7 +423,7 @@ type quorum struct {
 
 type quorumSet struct {
 	neededSize int
-	quorums    map[int]*quorum
+	quorums    []*quorum
 	related    func(interface{}, interface{}) bool
 	out        chan []interface{}
 	stop       chan interface{}
@@ -435,7 +434,7 @@ func newQuorumSet(size int,
 	relation func(interface{}, interface{}) bool) *quorumSet {
 	return &quorumSet{
 		neededSize: size,
-		quorums:    make(map[int]*quorum),
+		quorums:    nil,
 		related:    relation,
 		out:        make(chan []interface{}),
 		stop:       make(chan interface{}),
@@ -459,10 +458,10 @@ func (qs *quorumSet) add(e interface{}) {
 		}
 	}
 
-	qs.quorums[len(qs.quorums)] = &quorum{
+	qs.quorums = append(qs.quorums, &quorum{
 		size:     1,
 		elements: make([]interface{}, qs.neededSize),
-	}
+	})
 	qs.quorums[len(qs.quorums)-1].elements[0] = e
 
 	if qs.neededSize < 2 {

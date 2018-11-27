@@ -258,9 +258,12 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 			Command:  msg.Command,
 			Dep:      r.deps[msg.Instance],
 		}
-		// TODO: do not send commit to all peers
-		// if follower
-		r.sendToAll(commit, r.cs.commitRPC)
+
+		if r.status == FOLLOWER {
+			r.SendMsg(leaderMsg.Replica, r.cs.commitRPC, commit)
+		} else {
+			r.sendToAll(commit, r.cs.commitRPC)
+		}
 		go r.handleCommit(commit)
 	} else {
 		var leaderMsg *yagpaxosproto.MFastAck

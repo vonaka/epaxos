@@ -212,11 +212,6 @@ func (b *Parameters) Stats() string {
 // internals
 
 func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
-	/*
-	if b.isFast {
-		log.Fatal("NYI")
-	} */
-
 	err := errors.New("")
 	var value state.Value
 

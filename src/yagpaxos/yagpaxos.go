@@ -424,8 +424,8 @@ func leader(ballot int32, repNum int) int32 {
 	return ballot % int32(repNum)
 }
 
-func inConflict(c1 state.Command, c2 state.Command) bool {
-	return false
+func inConflict(c1, c2 state.Command) bool {
+	return state.Conflict(&c1, &c2)
 }
 
 type quorum struct {

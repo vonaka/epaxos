@@ -94,6 +94,7 @@ func (master *Master) run() {
 	for {
 		time.Sleep(3000 * 1000 * 1000)
 		new_leader := false
+		master.lock.Lock()
 		for i, node := range master.nodes {
 			err := node.Call("Replica.Ping", new(genericsmrproto.PingArgs), new(genericsmrproto.PingReply))
 			if err != nil {
@@ -108,9 +109,11 @@ func (master *Master) run() {
 				master.alive[i] = true
 			}
 		}
+		master.lock.Unlock()
 		if !new_leader {
 			continue
 		}
+		master.lock.Lock()
 		for i, new_master := range master.nodes {
 			if master.alive[i] {
 				err := new_master.Call("Replica.BeTheLeader", new(genericsmrproto.BeTheLeaderArgs), new(genericsmrproto.BeTheLeaderReply))
@@ -121,6 +124,7 @@ func (master *Master) run() {
 				}
 			}
 		}
+		master.lock.Unlock()
 	}
 }
 

@@ -380,6 +380,7 @@ func (r *Replica) RegisterRPC(msgObj fastrpc.Serializable, notify chan fastrpc.S
 func (r *Replica) SendMsg(peerId int32, code uint8, msg fastrpc.Serializable) {
 	r.M.Lock()
 	defer r.M.Unlock()
+
 	w := r.PeerWriters[peerId]
 	if w == nil {
 		log.Printf("Connection to %d lost!\n", peerId)
@@ -410,6 +411,7 @@ func (r *Replica) ReplyProposeTS(reply *genericsmrproto.ProposeReplyTS, w *bufio
 func (r *Replica) SendBeacon(peerId int32) {
 	r.M.Lock()
 	defer r.M.Unlock()
+
 	w := r.PeerWriters[peerId]
 	if w == nil {
 		log.Printf("Connection to %d lost!\n", peerId)
@@ -426,6 +428,7 @@ func (r *Replica) ReplyBeacon(beacon *Beacon) {
 	dlog.Println("replying beacon to ", beacon.Rid)
 	r.M.Lock()
 	defer r.M.Unlock()
+
 	w := r.PeerWriters[beacon.Rid]
 	if w == nil {
 		log.Printf("Connection to %d lost!\n", beacon.Rid)

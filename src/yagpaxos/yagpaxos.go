@@ -228,7 +228,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	}()
 	es, err := qs.wait(r)
 	r.Lock()
-	if es == nil && err == nil {
+	if es == nil {
 		return
 	}
 
@@ -518,7 +518,13 @@ func (qs *quorumSet) wait(m interface {
 	}
 
 	qs.waiting = true
-	defer func() { qs.waiting = false }()
+	defer func() {
+		if m != nil {
+			m.Lock()
+			defer m.Unlock()
+		}
+		qs.waiting = false
+	}()
 
 	if m != nil {
 		m.Unlock()

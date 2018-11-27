@@ -112,8 +112,14 @@ func (b *Parameters) Connect() error {
 	b.writers = make([]*bufio.Writer, b.n)
 
 	var toConnect []int
-	toConnect = append(toConnect, b.closestReplica)
 
+	if b.isFast {
+		for i := 0; i < b.n; i++ {
+			toConnect = append(toConnect, i)
+		}
+	} else {
+		toConnect = append(toConnect, b.closestReplica)
+	}
 	if !b.leaderless {
 		reply := new(masterproto.GetLeaderReply)
 		if err = master.Call("Master.GetLeader", new(masterproto.GetLeaderArgs), reply); err != nil {
@@ -122,7 +128,9 @@ func (b *Parameters) Connect() error {
 		}
 		b.Leader = reply.LeaderId
 		if b.closestReplica != b.Leader {
-			toConnect = append(toConnect, b.Leader)
+			if !b.isFast {
+				toConnect = append(toConnect, b.Leader)
+			}
 		}
 		log.Printf("The Leader is replica %d\n", b.Leader)
 	}
@@ -204,10 +212,10 @@ func (b *Parameters) Stats() string {
 // internals
 
 func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
-
+	/*
 	if b.isFast {
 		log.Fatal("NYI")
-	}
+	} */
 
 	err := errors.New("")
 	var value state.Value

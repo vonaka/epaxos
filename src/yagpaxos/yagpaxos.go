@@ -132,8 +132,14 @@ func (r *Replica) run() {
 	go func() {
 		r.ConnectToPeers()
 		r.ComputeClosestPeers()
-		go r.execute()
 		r.WaitForClientConnections()
+	}()
+
+	go func() {
+		for !r.Shutdown {
+			time.Sleep(4 * time.Second)
+			r.execute()
+		}
 	}()
 
 	for !r.Shutdown {
@@ -313,9 +319,13 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 
 func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.Lock()
-	defer r.Unlock()
+	defer func() {
+		r.Unlock()
+		r.execute()
+	}()
 
-	if r.status != LEADER && r.status != FOLLOWER {
+	if (r.status != LEADER && r.status != FOLLOWER) ||
+		r.phases[msg.Instance] == DELIVER {
 		return
 	}
 
@@ -438,49 +448,45 @@ func inConflict(c1, c2 state.Command) bool {
 }
 
 func (r *Replica) execute() {
-	for !r.Shutdown {
-		time.Sleep(100 * time.Millisecond)
-		r.Lock()
+	r.Lock()
+	defer r.Unlock()
 
-		for cmdId, p := range r.phases {
-			if p != COMMIT {
-				continue
-			}
-
-			exec := true
-			for depId := range r.deps[cmdId] {
-				if r.phases[depId] != DELIVER {
-					exec = false
-					break
-				}
-			}
-			if !exec {
-				continue
-			}
-
-			r.phases[cmdId] = DELIVER
-
-			if !r.Exec {
-				continue
-			}
-			cmd := r.cmds[cmdId]
-			v := (&cmd).Execute(r.State)
-			if r.status != LEADER || !r.Dreply {
-				continue
-			}
-
-			proposeReply := &genericsmrproto.ProposeReplyTS{
-				OK:        genericsmr.TRUE,
-				CommandId: cmdId,
-				Value:     v,
-				Timestamp: 42, // FIXME
-			}
-			r.ReplyProposeTS(proposeReply,
-				r.cs.proposeReplies[cmdId],
-				r.cs.proposeLocks[cmdId])
+	for cmdId, p := range r.phases {
+		if p != COMMIT {
+			continue
 		}
 
-		r.Unlock()
+		exec := true
+		for depId := range r.deps[cmdId] {
+			if r.phases[depId] != DELIVER {
+				exec = false
+				break
+			}
+		}
+		if !exec {
+			continue
+		}
+
+		r.phases[cmdId] = DELIVER
+
+		if !r.Exec {
+			continue
+		}
+		cmd := r.cmds[cmdId]
+		v := (&cmd).Execute(r.State)
+		if r.status != LEADER || !r.Dreply {
+			continue
+		}
+
+		proposeReply := &genericsmrproto.ProposeReplyTS{
+			OK:        genericsmr.TRUE,
+			CommandId: cmdId,
+			Value:     v,
+			Timestamp: 42, // FIXME
+		}
+		r.ReplyProposeTS(proposeReply,
+			r.cs.proposeReplies[cmdId],
+			r.cs.proposeLocks[cmdId])
 	}
 }
 

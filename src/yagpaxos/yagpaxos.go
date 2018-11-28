@@ -253,6 +253,20 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 
 	leaderId := leader(r.ballot, r.N)
 	getLeaderMsg := func(es []interface{}) *yagpaxosproto.MFastAck {
+		if r.status == LEADER {
+			someMsg := es[0].(*yagpaxosproto.MFastAck)
+			if someMsg.Dep.Equals(r.deps[msg.Instance]) {
+				return &yagpaxosproto.MFastAck{
+					Replica:  r.Id,
+					Ballot:   r.ballot,
+					Instance: msg.Instance,
+					Command:  r.cmds[msg.Instance],
+					Dep:      r.deps[msg.Instance],
+				}
+			}
+			return nil
+		}
+
 		for _, e := range es {
 			if (e.(*yagpaxosproto.MFastAck)).Replica == leaderId {
 				return e.(*yagpaxosproto.MFastAck)
@@ -524,7 +538,7 @@ func (qs *quorumSet) add(e interface{}) {
 	}
 
 	for _, q := range qs.quorums {
-		if qs.related(q.elements[0], e) {
+		if qs.related(q.elements[0], e) && q.size < qs.neededSize {
 			q.elements[q.size] = e
 			q.size++
 			if q.size == qs.neededSize {
@@ -566,8 +580,8 @@ func (qs *quorumSet) sortBySize() {
 }
 
 func (qs *quorumSet) after(d time.Duration) {
-		time.Sleep(d)
-		qs.stop <- nil
+	time.Sleep(d)
+	qs.stop <- nil
 }
 
 func (qs *quorumSet) wait(m interface {

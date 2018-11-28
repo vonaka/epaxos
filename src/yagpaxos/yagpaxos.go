@@ -68,6 +68,7 @@ type CommunicationSupply struct {
 
 	proposeReplies map[int32]*bufio.Writer
 	proposeLocks   map[int32]*sync.Mutex
+	timestamps     map[int32]int64
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
@@ -105,6 +106,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 			proposeReplies: make(map[int32]*bufio.Writer),
 			proposeLocks:   make(map[int32]*sync.Mutex),
+			timestamps:     make(map[int32]int64),
 		},
 	}
 
@@ -194,6 +196,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	r.cmds[msg.CommandId] = msg.Command
 	r.cs.proposeReplies[msg.CommandId] = msg.Reply
 	r.cs.proposeLocks[msg.CommandId] = msg.Mutex
+	r.cs.timestamps[msg.CommandId] = msg.Timestamp
 
 	fastAck := &yagpaxosproto.MFastAck{
 		Replica:  r.Id,
@@ -482,7 +485,7 @@ func (r *Replica) execute() {
 			OK:        genericsmr.TRUE,
 			CommandId: cmdId,
 			Value:     v,
-			Timestamp: 42, // FIXME
+			Timestamp: r.cs.timestamps[cmdId],
 		}
 		r.ReplyProposeTS(proposeReply,
 			r.cs.proposeReplies[cmdId],

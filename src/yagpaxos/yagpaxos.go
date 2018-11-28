@@ -1,6 +1,7 @@
 package yagpaxos
 
 import (
+	"bufio"
 	"errors"
 	"fastrpc"
 	"genericsmr"
@@ -64,6 +65,9 @@ type CommunicationSupply struct {
 	newLeaderAckRPC uint8
 	syncRPC         uint8
 	syncAckRPC      uint8
+
+	proposeReplies map[int32]*bufio.Writer
+	proposeLocks   map[int32]*sync.Mutex
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
@@ -99,6 +103,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 			syncAckChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
+			proposeReplies: make(map[int32]*bufio.Writer),
+			proposeLocks:   make(map[int32]*sync.Mutex),
 		},
 	}
 
@@ -126,6 +132,7 @@ func (r *Replica) run() {
 	go func() {
 		r.ConnectToPeers()
 		r.ComputeClosestPeers()
+		go r.execute()
 		r.WaitForClientConnections()
 	}()
 
@@ -179,6 +186,8 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	}
 	r.phases[msg.CommandId] = FAST_ACCEPT
 	r.cmds[msg.CommandId] = msg.Command
+	r.cs.proposeReplies[msg.CommandId] = msg.Reply
+	r.cs.proposeLocks[msg.CommandId] = msg.Mutex
 
 	fastAck := &yagpaxosproto.MFastAck{
 		Replica:  r.Id,
@@ -223,12 +232,12 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	qs.add(msg)
 	r.Unlock()
 	go func() {
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(500 * time.Millisecond) // FIXME
 		qs.stop <- nil
 	}()
 	es, err := qs.wait(r)
 	r.Lock()
-	if es == nil {
+	if es == nil && err == nil {
 		return
 	}
 
@@ -331,7 +340,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 			return slowAck1.Dep.Equals(slowAck2.Dep)
 		}
 		r.slowAckQuorumSets[msg.Instance] =
-			newQuorumSet(r.N>>1, related)
+			newQuorumSet(r.N/2+1, related)
 		qs = r.slowAckQuorumSets[msg.Instance]
 	}
 
@@ -428,6 +437,53 @@ func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
 }
 
+func (r *Replica) execute() {
+	for !r.Shutdown {
+		time.Sleep(100 * time.Millisecond)
+		r.Lock()
+
+		for cmdId, p := range r.phases {
+			if p != COMMIT {
+				continue
+			}
+
+			exec := true
+			for depId := range r.deps[cmdId] {
+				if r.phases[depId] != DELIVER {
+					exec = false
+					break
+				}
+			}
+			if !exec {
+				continue
+			}
+
+			r.phases[cmdId] = DELIVER
+
+			if !r.Exec {
+				continue
+			}
+			cmd := r.cmds[cmdId]
+			v := (&cmd).Execute(r.State)
+			if r.status != LEADER || !r.Dreply {
+				continue
+			}
+
+			proposeReply := &genericsmrproto.ProposeReplyTS{
+				OK:        genericsmr.TRUE,
+				CommandId: cmdId,
+				Value:     v,
+				Timestamp: 42, // FIXME
+			}
+			r.ReplyProposeTS(proposeReply,
+				r.cs.proposeReplies[cmdId],
+				r.cs.proposeLocks[cmdId])
+		}
+
+		r.Unlock()
+	}
+}
+
 type quorum struct {
 	// not the desired size, but the actual one
 	size     int
@@ -449,7 +505,7 @@ func newQuorumSet(size int,
 		neededSize: size,
 		quorums:    nil,
 		related:    relation,
-		out:        make(chan []interface{}),
+		out:        make(chan []interface{}, size),
 		stop:       make(chan interface{}),
 		waiting:    false,
 	}
@@ -518,14 +574,6 @@ func (qs *quorumSet) wait(m interface {
 	}
 
 	qs.waiting = true
-	defer func() {
-		if m != nil {
-			m.Lock()
-			defer m.Unlock()
-		}
-		qs.waiting = false
-	}()
-
 	if m != nil {
 		m.Unlock()
 	}

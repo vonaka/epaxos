@@ -226,17 +226,19 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 			b.writers[submitter].WriteByte(genericsmrproto.PROPOSE)
 			args.Marshal(b.writers[submitter])
 			b.writers[submitter].Flush()
+			if b.verbose {
+				log.Println("Sent to ", submitter)
+			}
 		} else {
 			//send to everyone
 			for rep := 0; rep < b.n; rep++ {
 				b.writers[rep].WriteByte(genericsmrproto.PROPOSE)
 				args.Marshal(b.writers[rep])
 				b.writers[rep].Flush()
+				if b.verbose {
+					log.Println("Sent to ", rep)
+				}
 			}
-		}
-
-		if b.verbose {
-			log.Println("Sent to ", submitter)
 		}
 
 		value, err = b.waitReplies(submitter)

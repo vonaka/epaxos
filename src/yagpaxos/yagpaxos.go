@@ -239,11 +239,8 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	}
 
 	qs.add(msg)
+	go qs.after(500 * time.Millisecond) // FIXME
 	r.Unlock()
-	go func() {
-		time.Sleep(500 * time.Millisecond) // FIXME
-		qs.stop <- nil
-	}()
 	es, err := qs.wait(r)
 	r.Lock()
 	if es == nil && err == nil {
@@ -358,6 +355,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	}
 
 	qs.add(msg)
+	go qs.after(500 * time.Millisecond) // FIXME
 	r.Unlock()
 	es, _ := qs.wait(r)
 	r.Lock()
@@ -565,6 +563,11 @@ func (qs *quorumSet) sortBySize() {
 	sort.Slice(qs.quorums, func(i, j int) bool {
 		return qs.quorums[i].size > qs.quorums[j].size
 	})
+}
+
+func (qs *quorumSet) after(d time.Duration) {
+		time.Sleep(d)
+		qs.stop <- nil
 }
 
 func (qs *quorumSet) wait(m interface {

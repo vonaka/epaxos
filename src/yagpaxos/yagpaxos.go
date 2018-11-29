@@ -238,12 +238,13 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		qs = r.fastAckQuorumSets[msg.Instance]
 	}
 
-	qs.add(msg)
-	go qs.after(500 * time.Millisecond) // FIXME
+	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
+	go qs.after(60 * time.Millisecond) // FIXME
 	r.Unlock()
-	es, err := qs.wait(r)
+	q, err := qs.wait(r)
 	r.Lock()
-	if es == nil && err == nil {
+	if q == nil && err == nil ||
+		r.phases[msg.Instance] == COMMIT || r.phases[msg.Instance] == DELIVER {
 		return
 	}
 
@@ -251,10 +252,14 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		delete(r.fastAckQuorumSets, msg.Instance)
 	}()
 
-	leaderId := leader(r.ballot, r.N)
-	getLeaderMsg := func(es []interface{}) *yagpaxosproto.MFastAck {
+	getLeaderMsg := func(q *quorum) *yagpaxosproto.MFastAck {
+		leaderMsg := q.getLeaderMsg()
+		if leaderMsg != nil {
+			return leaderMsg.(*yagpaxosproto.MFastAck)
+		}
+
 		if r.status == LEADER {
-			someMsg := es[0].(*yagpaxosproto.MFastAck)
+			someMsg := q.elements[0].(*yagpaxosproto.MFastAck)
 			if someMsg.Dep.Equals(r.deps[msg.Instance]) {
 				return &yagpaxosproto.MFastAck{
 					Replica:  r.Id,
@@ -264,19 +269,13 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 					Dep:      r.deps[msg.Instance],
 				}
 			}
-			return nil
 		}
 
-		for _, e := range es {
-			if (e.(*yagpaxosproto.MFastAck)).Replica == leaderId {
-				return e.(*yagpaxosproto.MFastAck)
-			}
-		}
 		return nil
 	}
 
 	if err == nil {
-		leaderMsg := getLeaderMsg(es)
+		leaderMsg := getLeaderMsg(q)
 		if leaderMsg == nil {
 			return
 		}
@@ -301,7 +300,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 			if q.size < slowQuorumSize {
 				return
 			}
-			leaderMsg = getLeaderMsg(q.elements)
+			leaderMsg = getLeaderMsg(q)
 			if leaderMsg != nil {
 				break
 			}
@@ -368,12 +367,12 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 		qs = r.slowAckQuorumSets[msg.Instance]
 	}
 
-	qs.add(msg)
-	go qs.after(500 * time.Millisecond) // FIXME
+	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
+	go qs.after(60 * time.Millisecond) // FIXME
 	r.Unlock()
-	es, _ := qs.wait(r)
+	q, _ := qs.wait(r)
 	r.Lock()
-	if es == nil {
+	if q == nil {
 		return
 	}
 
@@ -381,7 +380,8 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 		delete(r.slowAckQuorumSets, msg.Instance)
 	}()
 
-	if (es[0].(*yagpaxosproto.MSlowAck)).Dep.Equals(r.deps[msg.Instance]) {
+	someMsg := q.elements[0].(*yagpaxosproto.MSlowAck)
+	if someMsg.Dep.Equals(r.deps[msg.Instance]) {
 		commit := &yagpaxosproto.MCommit{
 			Replica:  r.Id,
 			Instance: msg.Instance,
@@ -488,7 +488,8 @@ func (r *Replica) execute() {
 			continue
 		}
 		cmd := r.cmds[cmdId]
-		v := (&cmd).Execute(r.State)
+		v := cmd.Execute(r.State)
+
 		if r.status != LEADER || !r.Dreply {
 			continue
 		}
@@ -508,6 +509,7 @@ func (r *Replica) execute() {
 type quorum struct {
 	// not the desired size, but the actual one
 	size     int
+	leaderId int
 	elements []interface{}
 }
 
@@ -515,7 +517,7 @@ type quorumSet struct {
 	neededSize int
 	quorums    []*quorum
 	related    func(interface{}, interface{}) bool
-	out        chan []interface{}
+	out        chan *quorum
 	stop       chan interface{}
 	waiting    bool
 }
@@ -526,13 +528,20 @@ func newQuorumSet(size int,
 		neededSize: size,
 		quorums:    nil,
 		related:    relation,
-		out:        make(chan []interface{}, size),
+		out:        make(chan *quorum, size),
 		stop:       make(chan interface{}),
 		waiting:    false,
 	}
 }
 
-func (qs *quorumSet) add(e interface{}) {
+func (q *quorum) getLeaderMsg() interface{} {
+	if q.leaderId != -1 {
+		return q.elements[q.leaderId]
+	}
+	return nil
+}
+
+func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 	if qs.neededSize < 1 {
 		return
 	}
@@ -540,37 +549,31 @@ func (qs *quorumSet) add(e interface{}) {
 	for _, q := range qs.quorums {
 		if qs.related(q.elements[0], e) && q.size < qs.neededSize {
 			q.elements[q.size] = e
+			if fromLeader {
+				q.leaderId = q.size
+			}
 			q.size++
 			if q.size == qs.neededSize {
-				qs.out <- q.elements
+				qs.out <- q
 			}
 			return
 		}
 	}
 
+	i := len(qs.quorums)
 	qs.quorums = append(qs.quorums, &quorum{
 		size:     1,
+		leaderId: -1,
 		elements: make([]interface{}, qs.neededSize),
 	})
-	qs.quorums[len(qs.quorums)-1].elements[0] = e
+	qs.quorums[i].elements[0] = e
+	if fromLeader {
+		qs.quorums[i].leaderId = 0
+	}
 
 	if qs.neededSize < 2 {
-		qs.out <- qs.quorums[len(qs.quorums)-1].elements
+		qs.out <- qs.quorums[i]
 	}
-}
-
-func (qs *quorumSet) getLargestSet() ([]interface{}, int) {
-	size := 0
-	var set []interface{}
-
-	for _, q := range qs.quorums {
-		if size < q.size {
-			size = q.size
-			set = q.elements
-		}
-	}
-
-	return set, size
 }
 
 func (qs *quorumSet) sortBySize() {
@@ -587,7 +590,7 @@ func (qs *quorumSet) after(d time.Duration) {
 func (qs *quorumSet) wait(m interface {
 	Lock()
 	Unlock()
-}) ([]interface{}, error) {
+}) (*quorum, error) {
 	if m != nil {
 		m.Lock()
 	}

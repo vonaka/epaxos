@@ -469,7 +469,7 @@ func (r *Replica) UpdatePreferredPeerOrder(quorum []int32) {
 	r.PreferredPeerOrder = aux
 }
 
-func (r *Replica) ComputeClosestPeers() {
+func (r *Replica) ComputeClosestPeers() []float64 {
 
 	npings := 20
 
@@ -506,10 +506,14 @@ func (r *Replica) ComputeClosestPeers() {
 
 	r.UpdatePreferredPeerOrder(quorum)
 
+	latencies := make([]float64, r.N-1)
+
 	for i := 0; i < r.N-1; i++ {
 		node := r.PreferredPeerOrder[i]
 		lat := float64(r.Latencies[node]) / float64(npings*1000000)
 		log.Println(node, " -> ", lat, "ms")
+		latencies[i] = lat
 	}
 
+	return latencies
 }

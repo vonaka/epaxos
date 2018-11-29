@@ -50,6 +50,8 @@ const (
 )
 
 type CommunicationSupply struct {
+	maxLatency time.Duration
+
 	fastAckChan      chan fastrpc.Serializable
 	commitChan       chan fastrpc.Serializable
 	slowAckChan      chan fastrpc.Serializable
@@ -90,6 +92,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		fastAckQuorumSets: make(map[int32]*quorumSet),
 
 		cs: CommunicationSupply{
+			maxLatency: 0,
+
 			fastAckChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 			commitChan: make(chan fastrpc.Serializable,
@@ -104,6 +108,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 			syncAckChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
+
 			proposeReplies: make(map[int32]*bufio.Writer),
 			proposeLocks:   make(map[int32]*sync.Mutex),
 			timestamps:     make(map[int32]int64),
@@ -133,7 +138,13 @@ func NewReplica(replicaId int, peerAddrs []string,
 func (r *Replica) run() {
 	go func() {
 		r.ConnectToPeers()
-		r.ComputeClosestPeers()
+		latencies := r.ComputeClosestPeers()
+		for _, l := range latencies {
+			d := time.Duration(l*1000*1000) * time.Nanosecond
+			if d > r.cs.maxLatency {
+				r.cs.maxLatency = d
+			}
+		}
 		r.WaitForClientConnections()
 	}()
 
@@ -239,7 +250,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	}
 
 	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
-	go qs.after(60 * time.Millisecond) // FIXME
+	go qs.after(10 * r.cs.maxLatency) // FIXME
 	r.Unlock()
 	q, err := qs.wait(r)
 	r.Lock()
@@ -368,7 +379,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	}
 
 	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
-	go qs.after(60 * time.Millisecond) // FIXME
+	go qs.after(10 * r.cs.maxLatency) // FIXME
 	r.Unlock()
 	q, _ := qs.wait(r)
 	r.Lock()

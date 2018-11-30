@@ -28,6 +28,7 @@ type Replica struct {
 
 	slowAckQuorumSets map[int32]*quorumSet
 	fastAckQuorumSets map[int32]*quorumSet
+	syncAckQuorumSet  *quorumSet
 
 	cs CommunicationSupply
 }
@@ -113,6 +114,9 @@ func NewReplica(replicaId int, peerAddrs []string,
 			timestamps:     make(map[int32]int64),
 		},
 	}
+
+	r.syncAckQuorumSet = newQuorumSet(r.N/2 + 1,
+		func(e1 interface{}, e2 interface{}) bool { return true })
 
 	r.cs.fastAckRPC =
 		r.RegisterRPC(new(yagpaxosproto.MFastAck), r.cs.fastAckChan)
@@ -446,7 +450,38 @@ func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
 }
 
 func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
-	log.Fatal("SyncAck: nyr")
+	r.Lock()
+	defer r.Unlock()
+
+	if r.status != PREPARING || r.ballot != msg.Ballot {
+		return
+	}
+
+	r.syncAckQuorumSet.add(struct{}{}, false)
+	go r.syncAckQuorumSet.after(10 * r.cs.maxLatency) // FIXME
+	r.Unlock()
+	q, _ := r.syncAckQuorumSet.wait(r)
+	r.Lock()
+	if q == nil {
+		return
+	}
+
+	r.status = LEADER
+	for cmdId, p := range r.phases {
+		// TODO: send commit even if p == DELIVER
+		if p == COMMIT || p == DELIVER {
+			return
+		}
+
+		commit := &yagpaxosproto.MCommit{
+			Replica:  r.Id,
+			Instance: cmdId,
+			Command:  r.cmds[cmdId],
+			Dep:      r.deps[cmdId],
+		}
+		r.sendToAll(commit, r.cs.commitRPC)
+		go r.handleCommit(commit)
+	}
 }
 
 func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,

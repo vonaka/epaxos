@@ -18,11 +18,11 @@ type Replica struct {
 	*genericsmr.Replica
 	sync.Mutex
 
-	status  status
+	status  int
 	ballot  int32
 	cballot int32
 
-	phases map[int32]phase
+	phases map[int32]int
 	cmds   map[int32]state.Command
 	deps   map[int32]yagpaxosproto.DepSet
 
@@ -32,17 +32,16 @@ type Replica struct {
 	cs CommunicationSupply
 }
 
-type status int
-type phase int
-
+// status
 const (
-	LEADER status = iota
+	LEADER = iota
 	FOLLOWER
 	PREPARING
 )
 
+// phase
 const (
-	START phase = iota
+	START = iota
 	FAST_ACCEPT
 	SLOW_ACCEPT
 	COMMIT
@@ -84,7 +83,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		ballot:  0,
 		cballot: 0,
 
-		phases: make(map[int32]phase),
+		phases: make(map[int32]int),
 		cmds:   make(map[int32]state.Command),
 		deps:   make(map[int32]yagpaxosproto.DepSet),
 
@@ -425,7 +424,25 @@ func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
 }
 
 func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
-	log.Fatal("Sync: nyr")
+	r.Lock()
+	defer r.Unlock()
+
+	if r.ballot >= msg.Ballot {
+		return
+	}
+
+	r.status = FOLLOWER
+	r.ballot = msg.Ballot
+	r.cballot = msg.Ballot
+	r.phases = msg.Phases
+	r.cmds = msg.Cmds
+	r.deps = msg.Deps
+
+	syncAck := &yagpaxosproto.MSyncAck{
+		Replica: r.Id,
+		Ballot: msg.Ballot,
+	}
+	r.SendMsg(leader(msg.Ballot, r.N), r.cs.syncAckRPC, syncAck)
 }
 
 func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {

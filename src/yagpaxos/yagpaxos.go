@@ -6,7 +6,6 @@ import (
 	"fastrpc"
 	"genericsmr"
 	"genericsmrproto"
-	"log"
 	"sort"
 	"state"
 	"sync"
@@ -26,9 +25,10 @@ type Replica struct {
 	cmds   map[int32]state.Command
 	deps   map[int32]yagpaxosproto.DepSet
 
-	slowAckQuorumSets map[int32]*quorumSet
-	fastAckQuorumSets map[int32]*quorumSet
-	syncAckQuorumSet  *quorumSet
+	slowAckQuorumSets     map[int32]*quorumSet
+	fastAckQuorumSets     map[int32]*quorumSet
+	newLeaderAckQuorumSet *quorumSet
+	syncAckQuorumSet      *quorumSet
 
 	cs CommunicationSupply
 }
@@ -115,6 +115,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		},
 	}
 
+	r.newLeaderAckQuorumSet = newQuorumSet(r.N/2 + 1,
+		func(e1 interface{}, e2 interface{}) bool { return true })
 	r.syncAckQuorumSet = newQuorumSet(r.N/2 + 1,
 		func(e1 interface{}, e2 interface{}) bool { return true })
 
@@ -263,7 +265,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	}
 
 	defer func() {
-		delete(r.fastAckQuorumSets, msg.Instance)
+		qs.waiting = false
 	}()
 
 	getLeaderMsg := func(q *quorum) *yagpaxosproto.MFastAck {
@@ -288,12 +290,12 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		return nil
 	}
 
-	if err == nil {
-		leaderMsg := getLeaderMsg(q)
-		if leaderMsg == nil {
-			return
-		}
+	var leaderMsg *yagpaxosproto.MFastAck
+	if q != nil {
+		leaderMsg = getLeaderMsg(q)
+	}
 
+	if err == nil && leaderMsg != nil {
 		commit := &yagpaxosproto.MCommit{
 			Replica:  r.Id,
 			Instance: msg.Instance,
@@ -308,7 +310,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		}
 		go r.handleCommit(commit)
 	} else {
-		var leaderMsg *yagpaxosproto.MFastAck
+		leaderMsg = nil
 		qs.sortBySize()
 		for _, q := range qs.quorums {
 			if q.size < slowQuorumSize {
@@ -391,7 +393,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	}
 
 	defer func() {
-		delete(r.slowAckQuorumSets, msg.Instance)
+		qs.waiting = false
 	}()
 
 	someMsg := q.elements[0].(*yagpaxosproto.MSlowAck)
@@ -424,7 +426,83 @@ func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
 }
 
 func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
-	log.Fatal("NewLeaderAck: nyr")
+	r.Lock()
+	defer r.Unlock()
+
+	if r.status != PREPARING || r.ballot != msg.Ballot {
+		return
+	}
+
+	r.newLeaderAckQuorumSet.add(msg, false)
+	go r.newLeaderAckQuorumSet.after(10 * r.cs.maxLatency) // FIXME
+	r.Unlock()
+	q, _ := r.newLeaderAckQuorumSet.wait(r)
+	r.Lock()
+	if q == nil {
+		return
+	}
+
+	maxCballot := int32(0)
+	for _, e := range q.elements {
+		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
+		if newLeaderAck.Cballot > maxCballot {
+			maxCballot = newLeaderAck.Cballot
+		}
+	}
+
+	moreThanFourth := func(cmdId int32) *yagpaxosproto.MNewLeaderAck {
+		n := 1
+		for _, e0 := range q.elements {
+			newLeaderAck0 := e0.(*yagpaxosproto.MNewLeaderAck)
+			d := newLeaderAck0.Deps[cmdId]
+			for _, e := range q.elements {
+				newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
+				if d.Equals(newLeaderAck.Deps[cmdId]) {
+					n++
+				}
+				if n >= r.N/4 {
+					return newLeaderAck0
+				}
+			}
+		}
+		return nil
+	}
+
+	cmdIds := make(map[int32]struct{})
+
+	for _, e := range q.elements {
+		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
+		for cmdId, p := range newLeaderAck.Phases {
+			_, exists := cmdIds[cmdId]
+			if !exists {
+				cmdIds[cmdId] = struct{}{}
+				r.deps[cmdId] = nil
+			}
+			if r.deps[cmdId] == nil &&
+				(p == COMMIT ||
+				(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot)) {
+				r.phases[cmdId] = newLeaderAck.Phases[cmdId]
+				r.cmds[cmdId] = newLeaderAck.Cmds[cmdId]
+				r.deps[cmdId] = newLeaderAck.Deps[cmdId]
+			} else if r.deps[cmdId] == nil {
+				someMsg := moreThanFourth(cmdId)
+				if someMsg != nil {
+					r.phases[cmdId] = SLOW_ACCEPT
+					r.cmds[cmdId] = someMsg.Cmds[cmdId]
+					r.deps[cmdId] = someMsg.Deps[cmdId]
+				}
+			}
+		}
+	}
+
+	sync := &yagpaxosproto.MSync{
+		Replica: r.Id,
+		Ballot: r.ballot,
+		Phases: r.phases,
+		Cmds:   r.cmds,
+		Deps:   r.deps,
+	}
+	r.sendToAll(sync, r.cs.syncRPC)
 }
 
 func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
@@ -592,7 +670,7 @@ func newQuorumSet(size int,
 		quorums:    nil,
 		related:    relation,
 		out:        make(chan *quorum, size),
-		stop:       make(chan interface{}),
+		stop:       make(chan interface{}, 1),
 		waiting:    false,
 	}
 }
@@ -610,13 +688,22 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 	}
 
 	for _, q := range qs.quorums {
-		if qs.related(q.elements[0], e) && q.size < qs.neededSize {
+		if qs.related(q.elements[0], e) {
+			if q.size >= qs.neededSize {
+				if fromLeader && q.leaderId == -1 {
+					q.elements = append(q.elements, e)
+					q.leaderId = q.size
+					q.size++
+				}
+				qs.out <- q
+				return
+			}
 			q.elements[q.size] = e
 			if fromLeader {
 				q.leaderId = q.size
 			}
 			q.size++
-			if q.size == qs.neededSize {
+			if q.size >= qs.neededSize {
 				qs.out <- q
 			}
 			return

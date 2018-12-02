@@ -115,9 +115,9 @@ func NewReplica(replicaId int, peerAddrs []string,
 		},
 	}
 
-	r.newLeaderAckQuorumSet = newQuorumSet(r.N/2 + 1,
+	r.newLeaderAckQuorumSet = newQuorumSet(r.N/2+1,
 		func(e1 interface{}, e2 interface{}) bool { return true })
-	r.syncAckQuorumSet = newQuorumSet(r.N/2 + 1,
+	r.syncAckQuorumSet = newQuorumSet(r.N/2+1,
 		func(e1 interface{}, e2 interface{}) bool { return true })
 
 	r.cs.fastAckRPC =
@@ -480,7 +480,7 @@ func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
 			}
 			if r.deps[cmdId] == nil &&
 				(p == COMMIT ||
-				(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot)) {
+					(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot)) {
 				r.phases[cmdId] = newLeaderAck.Phases[cmdId]
 				r.cmds[cmdId] = newLeaderAck.Cmds[cmdId]
 				r.deps[cmdId] = newLeaderAck.Deps[cmdId]
@@ -497,10 +497,10 @@ func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
 
 	sync := &yagpaxosproto.MSync{
 		Replica: r.Id,
-		Ballot: r.ballot,
-		Phases: r.phases,
-		Cmds:   r.cmds,
-		Deps:   r.deps,
+		Ballot:  r.ballot,
+		Phases:  r.phases,
+		Cmds:    r.cmds,
+		Deps:    r.deps,
 	}
 	r.sendToAll(sync, r.cs.syncRPC)
 }
@@ -522,7 +522,7 @@ func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
 
 	syncAck := &yagpaxosproto.MSyncAck{
 		Replica: r.Id,
-		Ballot: msg.Ballot,
+		Ballot:  msg.Ballot,
 	}
 	r.SendMsg(leader(msg.Ballot, r.N), r.cs.syncAckRPC, syncAck)
 }

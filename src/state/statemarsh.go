@@ -1,9 +1,7 @@
 package state
 
 import (
-	"bytes"
 	"encoding/binary"
-	"encoding/gob"
 	"io"
 )
 
@@ -30,34 +28,6 @@ func (t *Command) Unmarshal(r io.Reader) error {
 		return err
 	}
 
-	return nil
-}
-
-func (f *FullCmds) Marshal(w io.Writer) {
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	enc.Encode(f.C)
-	enc.Encode(f.D)
-	w.Write(buf.Bytes())
-}
-
-func (f *FullCmds) Unmarshal(r io.Reader) error {
-	dec := gob.NewDecoder(r)
-	dec.Decode(&f.C)
-	dec.Decode(&f.D)
-	return nil
-}
-
-func (i *Id) Marshal(w io.Writer) {
-	var buf bytes.Buffer
-	enc := gob.NewEncoder(&buf)
-	enc.Encode(i)
-	w.Write(buf.Bytes())
-}
-
-func (i *Id) Unmarshal(r io.Reader) error {
-	dec := gob.NewDecoder(r)
-	dec.Decode(&i)
 	return nil
 }
 

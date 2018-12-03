@@ -209,7 +209,7 @@ func (r *Replica) run() {
 			onOffProposeChan = r.ProposeChan
 			break
 
-		case propose := <- onOffProposeChan:
+		case propose := <-onOffProposeChan:
 			//got a Propose from a client
 			dlog.Printf("Received proposal with type=%d\n", propose.Command.Op)
 			r.handlePropose(propose)
@@ -369,7 +369,7 @@ func (r *Replica) bcastCommit(instance int32, ballot int32, command []state.Comm
 		}
 		if sent < (r.N >> 1) {
 			r.SendMsg(r.PreferredPeerOrder[q], r.commitShortRPC, argsShort)
-		}else{
+		} else {
 			r.SendMsg(r.PreferredPeerOrder[q], r.commitRPC, args)
 		}
 		sent++
@@ -477,7 +477,6 @@ func (r *Replica) handlePrepare(prepare *paxosproto.Prepare) {
 
 	preply := &paxosproto.PrepareReply{prepare.Instance,  inst.bal, inst.vbal, r.defaultBallot[r.Id], r.Id, inst.cmds}
 	r.replyPrepare(prepare.LeaderId, preply)
-
 }
 
 func (r *Replica) handleAccept(accept *paxosproto.Accept) {
@@ -740,7 +739,7 @@ func (r *Replica) executeCommands() {
 			inst := r.instanceSpace[i]
 			if inst!= nil && inst.cmds != nil && inst.status == COMMITTED {
 				for j := 0; j < len(inst.cmds); j++ {
-					dlog.Printf("Executing "+inst.cmds[j].String())
+					dlog.Printf("Executing " + inst.cmds[j].String())
 					if r.Dreply && inst.lb != nil && inst.lb.clientProposals != nil {
 						val := inst.cmds[j].Execute(r.State)
 						propreply := &genericsmrproto.ProposeReplyTS{
@@ -774,8 +773,8 @@ func (r *Replica) executeCommands() {
 		}
 
 		if !executed {
-			r.Mutex.Lock()
-			r.Mutex.Unlock() // FIXME for cache coherence
+			r.M.Lock()
+			r.M.Unlock() // FIXME for cache coherence
 			time.Sleep(SLEEP_TIME_NS)
 		}
 	}

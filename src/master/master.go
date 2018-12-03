@@ -6,30 +6,30 @@ import (
 	"genericsmrproto"
 	"log"
 	"masterproto"
+	"math"
 	"net"
 	"net/http"
 	"net/rpc"
-	"sync"
-	"time"
-	"math"
+	"os/exec"
 	"strconv"
 	"strings"
-	"os/exec"
+	"sync"
+	"time"
 )
 
 var portnum *int = flag.Int("port", 7087, "Port # to listen on. Defaults to 7087")
 var numNodes *int = flag.Int("N", 3, "Number of replicas. Defaults to 3.")
 
 type Master struct {
-	N        int
-	nodeList []string
-	addrList []string
-	portList []int
-	lock     *sync.Mutex
-	nodes    []*rpc.Client
-	leader   []bool
-	alive    []bool
-	latencies [] float64
+	N         int
+	nodeList  []string
+	addrList  []string
+	portList  []int
+	lock      *sync.Mutex
+	nodes     []*rpc.Client
+	leader    []bool
+	alive     []bool
+	latencies []float64
 }
 
 func main() {
@@ -61,7 +61,7 @@ func main() {
 }
 
 func (master *Master) run() {
-	for true {
+	for {
 		master.lock.Lock()
 		if len(master.nodeList) == master.N {
 			master.lock.Unlock()
@@ -78,11 +78,20 @@ func (master *Master) run() {
 		addr := fmt.Sprintf("%s:%d", master.addrList[i], master.portList[i]+1000)
 		master.nodes[i], err = rpc.DialHTTP("tcp", addr)
 		if err != nil {
-			log.Fatalf("Error connecting to replica %d (%v)\n", i,addr)
+			log.Fatalf("Error connecting to replica %d (%v)\n", i, addr)
+		}
+
+		if master.leader[i] {
+			err = master.nodes[i].Call("Replica.BeTheLeader",
+				new(genericsmrproto.BeTheLeaderArgs),
+				new(genericsmrproto.BeTheLeaderReply))
+			if err != nil {
+				log.Fatal("Not today Zurg!")
+			}
 		}
 	}
 
-	for true {
+	for {
 		time.Sleep(3000 * 1000 * 1000)
 		new_leader := false
 		for i, node := range master.nodes {
@@ -116,7 +125,6 @@ func (master *Master) run() {
 				}
 			}
 		}
-
 	}
 }
 
@@ -154,9 +162,9 @@ func (master *Master) Register(args *masterproto.RegisterArgs, reply *masterprot
 		out, err := exec.Command("ping", addr, "-c 2", "-q").Output()
 		if err == nil {
 			master.latencies[index], _ = strconv.ParseFloat(strings.Split(string(out), "/")[4], 64)
-			log.Printf(" node %v [%v] -> %v", index, master.nodeList[index],master.latencies[index])
-		}else{
-			log.Fatal("cannot connect to "+addr)
+			log.Printf(" node %v [%v] -> %v", index, master.nodeList[index], master.latencies[index])
+		} else {
+			log.Fatal("cannot connect to " + addr)
 		}
 	}
 
@@ -213,9 +221,9 @@ func (master *Master) GetReplicaList(args *masterproto.GetReplicaListArgs, reply
 
 	reply.ReplicaList = make([]string, 0)
 	reply.AliveList = make([]bool, 0)
-	for i,node := range master.nodeList {
-		reply.ReplicaList = append(reply.ReplicaList,node)
-		reply.AliveList = append(reply.AliveList,master.alive[i])
+	for i, node := range master.nodeList {
+		reply.ReplicaList = append(reply.ReplicaList, node)
+		reply.AliveList = append(reply.AliveList, master.alive[i])
 	}
 
 	log.Printf("nodes list %v", reply.ReplicaList)

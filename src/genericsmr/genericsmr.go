@@ -2,20 +2,20 @@ package genericsmr
 
 import (
 	"bufio"
+	"dlog"
 	"encoding/binary"
+	"encoding/json"
 	"fastrpc"
 	"fmt"
 	"genericsmrproto"
 	"io"
 	"log"
+	"math"
 	"net"
 	"os"
 	"state"
-	"time"
 	"sync"
-	"dlog"
-	"math"
-	"encoding/json"
+	"time"
 )
 
 const CHAN_BUFFER_SIZE = 200000
@@ -69,10 +69,10 @@ type Replica struct {
 	rpcTable map[uint8]*RPCPair
 	rpcCode  uint8
 
-	Ewma []float64
+	Ewma      []float64
 	Latencies []int64
 
-	Mutex sync.Mutex
+	M sync.Mutex
 
 	Stats *genericsmrproto.Stats
 }
@@ -273,11 +273,11 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 			if err = gbeaconReply.Unmarshal(reader); err != nil {
 				break
 			}
-			dlog.Println("receive beacon ", gbeaconReply.Timestamp, " reply from ",rid)
+			dlog.Println("receive beacon ", gbeaconReply.Timestamp, " reply from ", rid)
 			//TODO: UPDATE STUFF
-			r.Mutex.Lock()
+			r.M.Lock()
 			r.Latencies[rid] += time.Now().UnixNano() - gbeaconReply.Timestamp
-			r.Mutex.Unlock()
+			r.M.Unlock()
 			r.Ewma[rid] = 0.99*r.Ewma[rid] + 0.01*float64(time.Now().UnixNano()-gbeaconReply.Timestamp)
 			break
 
@@ -289,14 +289,14 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 				}
 				rpair.Chan <- obj
 			} else {
-				log.Fatal("Error: received unknown message type ", msgType," from  ", rid)
+				log.Fatal("Error: received unknown message type ", msgType, " from  ", rid)
 			}
 		}
 	}
 
-	r.Mutex.Lock()
+	r.M.Lock()
 	r.Alive[rid] = false
-	r.Mutex.Unlock()
+	r.M.Unlock()
 }
 
 func (r *Replica) clientListener(conn net.Conn) {
@@ -305,9 +305,9 @@ func (r *Replica) clientListener(conn net.Conn) {
 	var msgType byte //:= make([]byte, 1)
 	var err error
 
-	r.Mutex.Lock()
-	log.Println("Client up ", conn.RemoteAddr(),"(",r.LRead,")")
-	r.Mutex.Unlock()
+	r.M.Lock()
+	log.Println("Client up ", conn.RemoteAddr(), "(", r.LRead, ")")
+	r.M.Unlock()
 
 	mutex := &sync.Mutex{}
 
@@ -332,7 +332,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 					val,
 					propose.Timestamp}
 				r.ReplyProposeTS(propreply, writer, mutex)
-			}else{
+			} else {
 				r.ProposeChan <- &Propose{propose, writer, mutex}
 			}
 			break
@@ -354,9 +354,9 @@ func (r *Replica) clientListener(conn net.Conn) {
 			break
 
 		case genericsmrproto.STATS:
-			r.Mutex.Lock()
-			b,_ := json.Marshal(r.Stats)
-			r.Mutex.Unlock()
+			r.M.Lock()
+			b, _ := json.Marshal(r.Stats)
+			r.M.Unlock()
 			writer.Write(b)
 			writer.Flush()
 		}
@@ -372,16 +372,16 @@ func (r *Replica) RegisterRPC(msgObj fastrpc.Serializable, notify chan fastrpc.S
 	code := r.rpcCode
 	r.rpcCode++
 	r.rpcTable[code] = &RPCPair{msgObj, notify}
-	dlog.Println("registering RPC ",r.rpcCode)
+	dlog.Println("registering RPC ", r.rpcCode)
 	return code
 }
 
 func (r *Replica) SendMsg(peerId int32, code uint8, msg fastrpc.Serializable) {
-	r.Mutex.Lock()
-	defer r.Mutex.Unlock()
+	r.M.Lock()
+	defer r.M.Unlock()
 
 	w := r.PeerWriters[peerId]
-	if w==nil{
+	if w == nil {
 		log.Printf("Connection to %d lost!\n", peerId)
 		return
 	}
@@ -392,7 +392,7 @@ func (r *Replica) SendMsg(peerId int32, code uint8, msg fastrpc.Serializable) {
 
 func (r *Replica) SendMsgNoFlush(peerId int32, code uint8, msg fastrpc.Serializable) {
 	w := r.PeerWriters[peerId]
-	if w==nil{
+	if w == nil {
 		log.Printf("Connection to %d lost!\n", peerId)
 		return
 	}
@@ -401,17 +401,18 @@ func (r *Replica) SendMsgNoFlush(peerId int32, code uint8, msg fastrpc.Serializa
 }
 
 func (r *Replica) ReplyProposeTS(reply *genericsmrproto.ProposeReplyTS, w *bufio.Writer, lock *sync.Mutex) {
-	r.Mutex.Lock()
-	defer r.Mutex.Unlock()
+	r.M.Lock()
+	defer r.M.Unlock()
 	reply.Marshal(w)
 	w.Flush()
 }
 
 func (r *Replica) SendBeacon(peerId int32) {
-	r.Mutex.Lock()
-	defer r.Mutex.Unlock()
+	r.M.Lock()
+	defer r.M.Unlock()
+
 	w := r.PeerWriters[peerId]
-	if w==nil{
+	if w == nil {
 		log.Printf("Connection to %d lost!\n", peerId)
 		return
 	}
@@ -423,11 +424,12 @@ func (r *Replica) SendBeacon(peerId int32) {
 }
 
 func (r *Replica) ReplyBeacon(beacon *Beacon) {
-	dlog.Println("replying beacon to ",beacon.Rid)
-	r.Mutex.Lock()
-	defer r.Mutex.Unlock()
+	dlog.Println("replying beacon to ", beacon.Rid)
+	r.M.Lock()
+	defer r.M.Unlock()
+
 	w := r.PeerWriters[beacon.Rid]
-	if w==nil{
+	if w == nil {
 		log.Printf("Connection to %d lost!\n", beacon.Rid)
 		return
 	}
@@ -463,12 +465,12 @@ func (r *Replica) UpdatePreferredPeerOrder(quorum []int32) {
 		}
 	}
 
-	r.Mutex.Lock()
+	r.M.Lock()
 	r.PreferredPeerOrder = aux
-	r.Mutex.Unlock()
+	r.M.Unlock()
 }
 
-func (r *Replica) ComputeClosestPeers() {
+func (r *Replica) ComputeClosestPeers() []float64 {
 
 	npings := 20
 
@@ -477,13 +479,13 @@ func (r *Replica) ComputeClosestPeers() {
 			if i == r.Id {
 				continue
 			}
-			r.Mutex.Lock()
+			r.M.Lock()
 			if r.Alive[i] {
-				r.Mutex.Unlock()
+				r.M.Unlock()
 				r.SendBeacon(i)
 			} else {
 				r.Latencies[i] = math.MaxInt64
-				r.Mutex.Unlock()
+				r.M.Unlock()
 			}
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -491,7 +493,7 @@ func (r *Replica) ComputeClosestPeers() {
 
 	quorum := make([]int32, r.N)
 
-	r.Mutex.Lock()
+	r.M.Lock()
 	for i := int32(0); i < int32(r.N); i++ {
 		pos := 0
 		for j := int32(0); j < int32(r.N); j++ {
@@ -501,14 +503,18 @@ func (r *Replica) ComputeClosestPeers() {
 		}
 		quorum[pos] = int32(i)
 	}
-	r.Mutex.Unlock()
+	r.M.Unlock()
 
 	r.UpdatePreferredPeerOrder(quorum)
 
+	latencies := make([]float64, r.N-1)
+
 	for i := 0; i < r.N-1; i++ {
 		node := r.PreferredPeerOrder[i]
-		lat := float64(r.Latencies[node]) / float64(npings* 1000000)
-		log.Println(node, " -> ", lat , "ms")
+		lat := float64(r.Latencies[node]) / float64(npings*1000000)
+		log.Println(node, " -> ", lat, "ms")
+		latencies[i] = lat
 	}
 
+	return latencies
 }

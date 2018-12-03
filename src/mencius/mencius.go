@@ -861,7 +861,7 @@ func (r *Replica) executeCommands() {
 				r.ReplyProposeTS(&genericsmrproto.ProposeReplyTS{TRUE, inst.lb.clientProposal.CommandId, val, inst.lb.clientProposal.Timestamp},
 					inst.lb.clientProposal.Reply,
 					inst.lb.clientProposal.Mutex)
-			} else if inst.command.Op == state.PUT{
+			} else if inst.command.Op == state.PUT {
 				inst.command.Execute(r.State)
 			}
 			inst.status = EXECUTED

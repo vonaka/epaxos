@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"runtime/pprof"
 	"time"
+	"yagpaxos"
 )
 
 var portnum *int = flag.Int("port", 7070, "Port # to listen on. Defaults to 7070")
@@ -26,9 +27,10 @@ var myAddr *string = flag.String("addr", "", "Server address (this machine). Def
 var doMencius *bool = flag.Bool("m", false, "Use Mencius as the replication protocol. Defaults to false.")
 var doGpaxos *bool = flag.Bool("g", false, "Use Generalized Paxos as the replication protocol. Defaults to false.")
 var doEpaxos *bool = flag.Bool("e", false, "Use EPaxos as the replication protocol. Defaults to false.")
+var doYagpaxos *bool = flag.Bool("y", false, "Use Yet Another GPaxos as the replication protocol. Defaults to false.")
 var procs *int = flag.Int("p", 2, "GOMAXPROCS. Defaults to 2")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
- var thrifty = flag.Bool("thrifty",false, "Use only as many messages as strictly required for inter-replica communication.")
+var thrifty = flag.Bool("thrifty", false, "Use only as many messages as strictly required for inter-replica communication.")
 var exec = flag.Bool("exec", true, "Execute commands.")
 var lread = flag.Bool("lread", false, "Execute locally read command.")
 var dreply = flag.Bool("dreply", true, "Reply to client only after command has been executed.")
@@ -40,7 +42,7 @@ func main() {
 
 	runtime.GOMAXPROCS(*procs)
 
-	if *doMencius && *thrifty{
+	if *doMencius && *thrifty {
 		log.Fatal("incompatble options -m -thrifty")
 	}
 
@@ -72,6 +74,10 @@ func main() {
 		log.Println("Starting Generalized Paxos replica...")
 		rep := gpaxos.NewReplica(replicaId, nodeList, isLeader, *thrifty, *exec, *lread, *dreply)
 		rpc.Register(rep)
+	} else if *doYagpaxos {
+		log.Println("Starting Yet Another Optimized Generalized Paxos replica...")
+		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec, *lread, *dreply)
+		rpc.Register(rep)
 	} else {
 		log.Println("Starting classic Paxos replica...")
 		rep := paxos.NewReplica(replicaId, nodeList, isLeader, *thrifty, *exec, *lread, *dreply, *durable)
@@ -93,20 +99,27 @@ func registerWithMaster(masterAddr string) (int, []string, bool) {
 	args := &masterproto.RegisterArgs{*myAddr, *portnum}
 	var reply masterproto.RegisterReply
 
-	for done := false; !done; {
-		log.Printf("connecting to: %v",masterAddr)
+	log.Printf("connecting to: %v", masterAddr)
+	for {
 		mcli, err := rpc.DialHTTP("tcp", masterAddr)
 		if err == nil {
-			err = mcli.Call("Master.Register", args, &reply)
-			if err == nil && reply.Ready == true {
-				done = true
-				break
+			for {
+				// This is an active wait, not cool.
+				err = mcli.Call("Master.Register", args, &reply)
+				if err == nil {
+					if reply.Ready {
+						break
+					}
+					time.Sleep(4)
+				} else {
+					log.Printf("%v", err)
+				}
 			}
-		} 
-		if err != nil {
-		   log.Printf("%v",err)
+			break
+		} else {
+			log.Printf("%v", err)
 		}
-		time.Sleep(1e9)
+		time.Sleep(4)
 	}
 
 	return reply.ReplicaId, reply.NodeList, reply.IsLeader

@@ -453,8 +453,8 @@ func (r *Replica) executeCommands() {
 			}
 		}
 		if !executed {
-			r.Mutex.Lock()
-			r.Mutex.Unlock() // FIXME for cache coherence
+			r.M.Lock()
+			r.M.Unlock() // FIXME for cache coherence
 			time.Sleep(SLEEP_TIME_NS)
 		}
 	}
@@ -666,13 +666,13 @@ func (r *Replica) clearHashtables() {
 }
 
 func (r *Replica) updateCommitted(replica int32) {
-	r.Mutex.Lock()
+	r.M.Lock()
 	for r.InstanceSpace[replica][r.CommittedUpTo[replica]+1] != nil &&
 		(r.InstanceSpace[replica][r.CommittedUpTo[replica]+1].Status == epaxosproto.COMMITTED ||
 			r.InstanceSpace[replica][r.CommittedUpTo[replica]+1].Status == epaxosproto.EXECUTED) {
 		r.CommittedUpTo[replica] = r.CommittedUpTo[replica] + 1
 	}
-	r.Mutex.Unlock()
+	r.M.Unlock()
 }
 
 func (r *Replica) updateConflicts(cmds []state.Command, replica int32, instance int32, seq int32) {
@@ -783,10 +783,10 @@ func (r *Replica) handlePropose(propose *genericsmr.Propose) {
 	if batchSize > MAX_BATCH {
 		batchSize = MAX_BATCH
 	}
-	r.Mutex.Lock()
+	r.M.Lock()
 	r.Stats.M["totalBatching"]++
 	r.Stats.M["totalBatchingSize"] += batchSize
-	r.Mutex.Unlock()
+	r.M.Unlock()
 
 	r.crtInstance[r.Id]++
 
@@ -821,7 +821,6 @@ func (r *Replica) startPhase1(cmds []state.Command, replica int32, instance int3
 	for i := 0; i < r.N; i++ {
 		comDeps[i] = -1
 	}
-
 	inst := r.newInstance(replica, instance, cmds,ballot,ballot,epaxosproto.PREACCEPTED,seq,deps)
 	inst.lb = r.newLeaderBookkeeping(proposals,deps,comDeps,deps,ballot,cmds,epaxosproto.PREACCEPTED,-1)
 	r.InstanceSpace[replica][instance] = inst
@@ -838,7 +837,6 @@ func (r *Replica) startPhase1(cmds []state.Command, replica int32, instance int3
 
 	dlog.Printf("Phase1Start in %d.%d w. (ballot=%d, seq=%d, deps=%d)\n", replica, instance, ballot, seq, deps)
 	r.bcastPreAccept(replica, instance)
-
 }
 
 func (r *Replica) handlePreAccept(preAccept *epaxosproto.PreAccept) {
@@ -883,7 +881,6 @@ func (r *Replica) handlePreAccept(preAccept *epaxosproto.PreAccept) {
 		}
 
 	} else {
-
 		seq, deps, changed := r.updateAttributes(preAccept.Command, preAccept.Seq, preAccept.Deps, preAccept.Replica, preAccept.Instance)
 		status := epaxosproto.PREACCEPTED_EQ
 		if changed {
@@ -964,9 +961,9 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 	} else {
 		inst.lb.allEqual = inst.lb.allEqual && allEqual
 		if !allEqual {
-			r.Mutex.Lock()
+			r.M.Lock()
 			r.Stats.M["conflicted"]++
-			r.Mutex.Unlock()
+			r.M.Unlock()
 		}
 	}
 
@@ -1023,12 +1020,12 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 
 		r.bcastCommit(pareply.Replica, pareply.Instance)
 
-		r.Mutex.Lock()
+		r.M.Lock()
 		r.Stats.M["fast"]++
 		if inst.proposeTime != 0 {
 			r.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
 		}
-		r.Mutex.Unlock()
+		r.M.Unlock()
 	} else if inst.lb.preAcceptOKs >= (r.slowQuorumSize()-1) && !precondition {
 		dlog.Printf("Slow path %d.%d (inst.lb.allEqual=%t, allCommitted=%t, isInitialBallot=%t)\n", pareply.Replica, pareply.Instance, allEqual, allCommitted, isInitialBallot)
 		lb.status = epaxosproto.ACCEPTED
@@ -1043,15 +1040,14 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 
 		r.bcastAccept(pareply.Replica, pareply.Instance)
 
-		r.Mutex.Lock()
+		r.M.Lock()
 		r.Stats.M["slow"]++
 		if !allCommitted {
 			r.Stats.M["weird"]++
 		}
-		r.Mutex.Unlock()
+		r.M.Unlock()
 	} else {
 		dlog.Printf("Not enough pre-accept replies in %d.%d (preAcceptOk=%d, slowQuorumSize=%d, precondition=%t)\n", pareply.Replica, pareply.Instance, lb.preAcceptOKs, r.slowQuorumSize(), precondition)
-
 	}
 }
 
@@ -1152,11 +1148,11 @@ func (r *Replica) handleAcceptReply(areply *epaxosproto.AcceptReply) {
 		}
 
 		r.bcastCommit(areply.Replica, areply.Instance)
-		r.Mutex.Lock()
+		r.M.Lock()
 		if inst.proposeTime != 0 {
 				r.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
 		}
-		r.Mutex.Unlock()
+		r.M.Unlock()
 	} else {
 		dlog.Println("Not enough")
 	}

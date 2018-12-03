@@ -13,6 +13,7 @@ SERVER=bin/server
 CLIENT=bin/client
 
 DIFF_TOOL=diff
+#DIFF_TOOL=merge
 
 failures=2
 
@@ -56,15 +57,18 @@ clients() {
     done
 
     ended=-1
-    while [[ ${ended} != ${NCLIENTS} ]] && [[ ${failures} > 0 ]]; do
+    while [ ${ended} != ${NCLIENTS} ]; do
         ended=$(tail -n 1 logs/c_*.txt | grep "Test took" | wc -l)
-        sleep 20
-        leader=$(grep "new leader" ${LOGS}/m.txt | tail -n 1 | awk '{print $4}')
-        port=$(grep "node ${leader}" ${LOGS}/m.txt | sed -n 's/.*\(:.*\]\).*/\1/p' | sed 's/[]:]//g')
-        pid=$(ps -ef | grep "bin/server" | grep "${port}" | awk '{print $2}')
-        echo ">>>>> Injecting failure... (${leader}, ${port}, ${pid})"
-        kill -9 ${pid}
-        failures=$((failures - 1))
+        sleep 1
+        if ((${failures} > 0)); then
+            sleep 20
+            leader=$(grep "new leader" ${LOGS}/m.txt | tail -n 1 | awk '{print $4}')
+            port=$(grep "node ${leader} \[" ${LOGS}/m.txt | sed -n 's/.*\(:.*\]\).*/\1/p' | sed 's/[]:]//g')
+            pid=$(ps -ef | grep "bin/server" | grep "${port}" | awk '{print $2}')
+            echo ">>>>> Injecting failure... (${leader}, ${port}, ${pid})"
+            kill -9 ${pid}
+            failures=$((failures - 1))
+        fi
     done
     echo ">>>>> Clients ended!"
 }

@@ -5,9 +5,9 @@ import (
 )
 
 type Prepare struct {
-	LeaderId   int32
-	Instance   int32
-	Ballot     int32
+	LeaderId int32
+	Instance int32
+	Ballot   int32
 }
 
 type PrepareReply struct {

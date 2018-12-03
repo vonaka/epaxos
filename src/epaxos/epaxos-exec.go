@@ -124,7 +124,7 @@ func (e *Exec) strongconnect(v *Instance, index *int) bool {
 		sort.Sort(nodeArray(list))
 		for _, w := range list {
 			for idx := 0; idx < len(w.Cmds); idx++ {
-				shouldRespond:=e.r.Dreply && w.lb != nil && w.lb.clientProposals != nil
+				shouldRespond := e.r.Dreply && w.lb != nil && w.lb.clientProposals != nil
 				dlog.Printf("Executing "+w.Cmds[idx].String()+" at %d.%d with (seq=%d, deps=%d, scc_size=%d, shouldRespond=%t)\n", w.id.replica, w.id.instance, w.Seq, w.Deps, len(list), shouldRespond)
 				if w.Cmds[idx].Op == state.NONE {
 					// nothing to do

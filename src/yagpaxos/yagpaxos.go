@@ -21,6 +21,8 @@ type Replica struct {
 	ballot  int32
 	cballot int32
 
+	cmdId int32
+
 	phases map[int32]int
 	cmds   map[int32]state.Command
 	deps   map[int32]yagpaxosproto.DepSet
@@ -83,6 +85,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		status:  FOLLOWER,
 		ballot:  0,
 		cballot: 0,
+
+		cmdId: 0,
 
 		phases: make(map[int32]int),
 		cmds:   make(map[int32]state.Command),
@@ -197,31 +201,30 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		return
 	}
 
-	p, exists := r.phases[msg.CommandId]
-	if exists && p != START {
-		return
-	}
+	// TODO: ignore duplicates
 
-	r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
+	r.cmdId++
+
+	r.deps[r.cmdId] = yagpaxosproto.NewDepSet()
 	for cid, p := range r.phases {
 		if p != START && inConflict(r.cmds[cid], msg.Command) {
-			r.deps[msg.CommandId].Add(cid)
+			r.deps[r.cmdId].Add(cid)
 		}
 	}
-	r.phases[msg.CommandId] = FAST_ACCEPT
-	r.cmds[msg.CommandId] = msg.Command
-	r.cs.proposeReplies[msg.CommandId] = msg.Reply
-	r.cs.proposeLocks[msg.CommandId] = msg.Mutex
-	r.cs.timestamps[msg.CommandId] = msg.Timestamp
+	r.phases[r.cmdId] = FAST_ACCEPT
+	r.cmds[r.cmdId] = msg.Command
+	r.cs.proposeReplies[r.cmdId] = msg.Reply
+	r.cs.proposeLocks[r.cmdId] = msg.Mutex
+	r.cs.timestamps[r.cmdId] = msg.Timestamp
 
 	fastAck := &yagpaxosproto.MFastAck{
 		Replica:  r.Id,
 		Ballot:   r.ballot,
-		Instance: msg.CommandId,
+		Instance: r.cmdId,
 		Command:  msg.Command,
 		// if I'm not mistaken,
 		// there is no need to copy these two maps:
-		Dep: r.deps[msg.CommandId],
+		Dep: r.deps[r.cmdId],
 	}
 	r.sendToAll(fastAck, r.cs.fastAckRPC)
 	// for some strange architectural reason there is no way

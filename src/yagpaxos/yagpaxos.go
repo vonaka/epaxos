@@ -231,7 +231,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	defer r.Unlock()
 
 	if (r.status != LEADER && r.status != FOLLOWER) ||
-		r.ballot != msg.Ballot  || r.phases[msg.Instance] == COMMIT ||
+		r.ballot != msg.Ballot || r.phases[msg.Instance] == COMMIT ||
 		r.phases[msg.Instance] == DELIVER {
 		return
 	}

@@ -821,6 +821,7 @@ func (r *Replica) startPhase1(cmds []state.Command, replica int32, instance int3
 	for i := 0; i < r.N; i++ {
 		comDeps[i] = -1
 	}
+
 	inst := r.newInstance(replica, instance, cmds, ballot, ballot, epaxosproto.PREACCEPTED, seq, deps)
 	inst.lb = r.newLeaderBookkeeping(proposals, deps, comDeps, deps, ballot, cmds, epaxosproto.PREACCEPTED, -1)
 	r.InstanceSpace[replica][instance] = inst
@@ -1026,7 +1027,7 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 			r.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
 		}
 		r.M.Unlock()
-	} else if inst.lb.preAcceptOKs >= (r.slowQuorumSize()-1) && !precondition {
+	} else if inst.lb.preAcceptOKs >= r.fastQuorumSize()-1 {
 		dlog.Printf("Slow path %d.%d (inst.lb.allEqual=%t, allCommitted=%t, isInitialBallot=%t)\n", pareply.Replica, pareply.Instance, allEqual, allCommitted, isInitialBallot)
 		lb.status = epaxosproto.ACCEPTED
 

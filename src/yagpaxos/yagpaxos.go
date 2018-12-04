@@ -21,8 +21,6 @@ type Replica struct {
 	ballot  int32
 	cballot int32
 
-	cmdId int32
-
 	phases map[int32]int
 	cmds   map[int32]state.Command
 	deps   map[int32]yagpaxosproto.DepSet
@@ -86,8 +84,6 @@ func NewReplica(replicaId int, peerAddrs []string,
 		ballot:  0,
 		cballot: 0,
 
-		cmdId: 0,
-
 		phases: make(map[int32]int),
 		cmds:   make(map[int32]state.Command),
 		deps:   make(map[int32]yagpaxosproto.DepSet),
@@ -121,7 +117,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 
 	r.newLeaderAckQuorumSet = newQuorumSet(r.N/2+1,
 		func(e1 interface{}, e2 interface{}) bool { return true })
-	r.syncAckQuorumSet = newQuorumSet(r.N/2+1,
+	r.syncAckQuorumSet = newQuorumSet(r.N/2,
 		func(e1 interface{}, e2 interface{}) bool { return true })
 
 	r.cs.fastAckRPC =
@@ -145,17 +141,16 @@ func NewReplica(replicaId int, peerAddrs []string,
 }
 
 func (r *Replica) run() {
-	go func() {
-		r.ConnectToPeers()
-		latencies := r.ComputeClosestPeers()
-		for _, l := range latencies {
-			d := time.Duration(l*1000*1000) * time.Nanosecond
-			if d > r.cs.maxLatency {
-				r.cs.maxLatency = d
-			}
+	r.ConnectToPeers()
+	latencies := r.ComputeClosestPeers()
+	for _, l := range latencies {
+		d := time.Duration(l*1000*1000) * time.Nanosecond
+		if d > r.cs.maxLatency {
+			r.cs.maxLatency = d
 		}
-		r.WaitForClientConnections()
-	}()
+	}
+
+	go r.WaitForClientConnections()
 
 	go func() {
 		for !r.Shutdown {
@@ -203,28 +198,26 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 
 	// TODO: ignore duplicates
 
-	r.cmdId++
-
-	r.deps[r.cmdId] = yagpaxosproto.NewDepSet()
+	r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
 	for cid, p := range r.phases {
 		if p != START && inConflict(r.cmds[cid], msg.Command) {
-			r.deps[r.cmdId].Add(cid)
+			r.deps[msg.CommandId].Add(cid)
 		}
 	}
-	r.phases[r.cmdId] = FAST_ACCEPT
-	r.cmds[r.cmdId] = msg.Command
-	r.cs.proposeReplies[r.cmdId] = msg.Reply
-	r.cs.proposeLocks[r.cmdId] = msg.Mutex
-	r.cs.timestamps[r.cmdId] = msg.Timestamp
+	r.phases[msg.CommandId] = FAST_ACCEPT
+	r.cmds[msg.CommandId] = msg.Command
+	r.cs.proposeReplies[msg.CommandId] = msg.Reply
+	r.cs.proposeLocks[msg.CommandId] = msg.Mutex
+	r.cs.timestamps[msg.CommandId] = msg.Timestamp
 
 	fastAck := &yagpaxosproto.MFastAck{
 		Replica:  r.Id,
 		Ballot:   r.ballot,
-		Instance: r.cmdId,
+		Instance: msg.CommandId,
 		Command:  msg.Command,
 		// if I'm not mistaken,
 		// there is no need to copy these two maps:
-		Dep: r.deps[r.cmdId],
+		Dep: r.deps[msg.CommandId],
 	}
 	r.sendToAll(fastAck, r.cs.fastAckRPC)
 	// for some strange architectural reason there is no way
@@ -238,7 +231,8 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	defer r.Unlock()
 
 	if (r.status != LEADER && r.status != FOLLOWER) ||
-		r.ballot != msg.Ballot {
+		r.ballot != msg.Ballot  || r.phases[msg.Instance] == COMMIT ||
+		r.phases[msg.Instance] == DELIVER {
 		return
 	}
 
@@ -258,7 +252,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	}
 
 	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
-	go qs.after(10 * r.cs.maxLatency) // FIXME
+	qs.wakeupAfter(10 * r.cs.maxLatency) // FIXME
 	r.Unlock()
 	q, err := qs.wait(r)
 	r.Lock()
@@ -267,9 +261,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		return
 	}
 
-	defer func() {
-		qs.waiting = false
-	}()
+	defer qs.reset()
 
 	getLeaderMsg := func(q *quorum) *yagpaxosproto.MFastAck {
 		leaderMsg := q.getLeaderMsg()
@@ -387,17 +379,18 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	}
 
 	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
-	go qs.after(10 * r.cs.maxLatency) // FIXME
+	qs.wakeupAfter(10 * r.cs.maxLatency) // FIXME
 	r.Unlock()
-	q, _ := qs.wait(r)
+	q, err := qs.wait(r)
 	r.Lock()
 	if q == nil {
+		if err != nil {
+			qs.reset()
+		}
 		return
 	}
 
-	defer func() {
-		qs.waiting = false
-	}()
+	defer qs.reset()
 
 	someMsg := q.elements[0].(*yagpaxosproto.MSlowAck)
 	if someMsg.Dep.Equals(r.deps[msg.Instance]) {
@@ -420,11 +413,22 @@ func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
 		return
 	}
 
+	r.status = PREPARING
 	r.ballot = msg.Ballot
-	if leader(r.ballot, r.N) == r.Id {
-		r.status = LEADER
+
+	newLeaderAck := &yagpaxosproto.MNewLeaderAck{
+		Replica: r.Id,
+		Ballot:  r.ballot,
+		Cballot: r.cballot,
+		Phases:  r.phases,
+		Cmds:    r.cmds,
+		Deps:    r.deps,
+	}
+
+	if l := leader(r.ballot, r.N); l == r.Id {
+		go r.handleNewLeaderAck(newLeaderAck)
 	} else {
-		r.status = FOLLOWER
+		r.SendMsg(l, r.cs.newLeaderAckRPC, newLeaderAck)
 	}
 }
 
@@ -437,13 +441,18 @@ func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
 	}
 
 	r.newLeaderAckQuorumSet.add(msg, false)
-	go r.newLeaderAckQuorumSet.after(10 * r.cs.maxLatency) // FIXME
+	r.newLeaderAckQuorumSet.wakeupAfter(10 * time.Second) // FIXME
 	r.Unlock()
-	q, _ := r.newLeaderAckQuorumSet.wait(r)
+	q, err := r.newLeaderAckQuorumSet.wait(r)
 	r.Lock()
 	if q == nil {
+		if err != nil {
+			r.newLeaderAckQuorumSet.reset()
+		}
 		return
 	}
+
+	defer r.newLeaderAckQuorumSet.reset()
 
 	maxCballot := int32(0)
 	for _, e := range q.elements {
@@ -512,7 +521,7 @@ func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
 	r.Lock()
 	defer r.Unlock()
 
-	if r.ballot >= msg.Ballot {
+	if r.ballot > msg.Ballot {
 		return
 	}
 
@@ -539,13 +548,18 @@ func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
 	}
 
 	r.syncAckQuorumSet.add(struct{}{}, false)
-	go r.syncAckQuorumSet.after(10 * r.cs.maxLatency) // FIXME
+	r.syncAckQuorumSet.wakeupAfter(10 * r.cs.maxLatency) // FIXME
 	r.Unlock()
-	q, _ := r.syncAckQuorumSet.wait(r)
+	q, err := r.syncAckQuorumSet.wait(r)
 	r.Lock()
 	if q == nil {
+		if err != nil {
+			r.syncAckQuorumSet.reset()
+		}
 		return
 	}
+
+	defer r.syncAckQuorumSet.reset()
 
 	r.status = LEADER
 	for cmdId, p := range r.phases {
@@ -658,6 +672,7 @@ type quorum struct {
 }
 
 type quorumSet struct {
+	*sync.Once
 	neededSize int
 	quorums    []*quorum
 	related    func(interface{}, interface{}) bool
@@ -669,6 +684,7 @@ type quorumSet struct {
 func newQuorumSet(size int,
 	relation func(interface{}, interface{}) bool) *quorumSet {
 	return &quorumSet{
+		Once:       &sync.Once{},
 		neededSize: size,
 		quorums:    nil,
 		related:    relation,
@@ -735,9 +751,17 @@ func (qs *quorumSet) sortBySize() {
 	})
 }
 
-func (qs *quorumSet) after(d time.Duration) {
-	time.Sleep(d)
-	qs.stop <- nil
+func (qs *quorumSet) wakeupAfter(d time.Duration) {
+	qs.Do(func() {
+		go func() {
+			time.Sleep(d)
+			qs.stop <- nil
+		}()
+	})
+}
+
+func (qs *quorumSet) reset() {
+	qs.waiting = false
 }
 
 func (qs *quorumSet) wait(m interface {
@@ -762,6 +786,13 @@ func (qs *quorumSet) wait(m interface {
 
 	select {
 	case q := <-qs.out:
+		if m != nil {
+			m.Lock()
+		}
+		qs.Once = &sync.Once{}
+		if m != nil {
+			m.Unlock()
+		}
 		return q, nil
 	case <-qs.stop:
 		return nil, errors.New("Stopped")

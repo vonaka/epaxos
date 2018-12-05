@@ -9,26 +9,26 @@ import (
 )
 
 type MFastAck struct {
-	Replica  int32
-	Ballot   int32
-	Instance int32
-	Command  state.Command
-	Dep      DepSet
+	Replica   int32
+	Ballot    int32
+	CommandId int32
+	Command   state.Command
+	Dep       DepSet
 }
 
 type MCommit struct {
-	Replica  int32
-	Instance int32
-	Command  state.Command
-	Dep      DepSet
+	Replica   int32
+	CommandId int32
+	Command   state.Command
+	Dep       DepSet
 }
 
 type MSlowAck struct {
-	Replica  int32
-	Ballot   int32
-	Instance int32
-	Command  state.Command
-	Dep      DepSet
+	Replica   int32
+	Ballot    int32
+	CommandId int32
+	Command   state.Command
+	Dep       DepSet
 }
 
 type MNewLeader struct {

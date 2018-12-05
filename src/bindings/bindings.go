@@ -235,18 +235,17 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 				log.Println("Sent to ", submitter)
 			}
 		} else {
-			//send to everyone
+			if b.verbose {
+				log.Println("Sent to everyone")
+			}
 			for rep := 0; rep < b.n; rep++ {
 				b.writers[rep].WriteByte(genericsmrproto.PROPOSE)
 				args.Marshal(b.writers[rep])
 				b.writers[rep].Flush()
-				if b.verbose {
-					log.Println("Sent to ", rep)
-				}
 			}
 		}
 
-		value, err = b.waitReplies(submitter)
+		value, err = b.waitReplies(submitter, args.CommandId)
 
 		if err != nil {
 
@@ -275,16 +274,24 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	return value
 }
 
-func (b *Parameters) waitReplies(submitter int) (state.Value, error) {
+func (b *Parameters) waitReplies(submitter int,
+	cmdId int32) (state.Value, error) {
 	var err error
 	ret := state.NIL()
 
 	rep := new(genericsmrproto.ProposeReplyTS)
-	if err = rep.Unmarshal(b.readers[submitter]); err == nil {
-		if rep.OK == TRUE {
-			ret = rep.Value
-		} else {
-			err = errors.New("Failed to receive a response.")
+	for {
+		if err = rep.Unmarshal(b.readers[submitter]); err == nil {
+			if rep.CommandId != cmdId {
+				continue
+			}
+			if rep.OK == TRUE {
+				ret = rep.Value
+				break
+			} else {
+				err = errors.New("Failed to receive a response.")
+				break
+			}
 		}
 	}
 

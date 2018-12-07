@@ -142,12 +142,12 @@ func (r *Replica) run() {
 
 	go r.WaitForClientConnections()
 
-	/*go func() {
+	go func() {
 		for !r.Shutdown {
-			time.Sleep(4 * time.Second)
+			time.Sleep(100*r.cs.maxLatency)
 			r.execute()
 		}
-	}()*/
+	}()
 
 	for !r.Shutdown {
 		select {
@@ -192,14 +192,18 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	}
 	r.proposes[msg.CommandId] = msg
 
-	r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
-	for cid, p := range r.phases {
-		if p != START && inConflict(r.cmds[cid], msg.Command) {
-			r.deps[msg.CommandId].Add(cid)
+	_, exists = r.cmds[msg.CommandId]
+	if !exists {
+		r.phases[msg.CommandId] = FAST_ACCEPT
+		r.cmds[msg.CommandId] = msg.Command
+		r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
+		for cid, p := range r.phases {
+			if cid != msg.CommandId && p != START &&
+				inConflict(r.cmds[cid], msg.Command) {
+				r.deps[msg.CommandId].Add(cid)
+			}
 		}
 	}
-	r.phases[msg.CommandId] = FAST_ACCEPT
-	r.cmds[msg.CommandId] = msg.Command
 
 	fastAck := &yagpaxosproto.MFastAck{
 		Replica:   r.Id,
@@ -221,9 +225,10 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 	}
 
 	qs, exists := r.fastAckQuorumSets[msg.CommandId]
+
 	if !exists {
 		fastQuorumSize := 3*r.N/4 + 1
-		waitFor := 1000 * r.cs.maxLatency // FIXME
+		waitFor := 100 * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
@@ -306,7 +311,6 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	defer func() {
 		r.Unlock()
 		r.execute()
-		//r.executeCmd(msg.CommandId)
 	}()
 
 	if (r.status != LEADER && r.status != FOLLOWER) ||
@@ -330,7 +334,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	qs, exists := r.slowAckQuorumSets[msg.CommandId]
 	if !exists {
 		slowQuorumSize := r.N/2 + 1
-		waitFor := 1000 * r.cs.maxLatency // FIXME
+		waitFor := 100 * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
 			slowAck2 := e2.(*yagpaxosproto.MSlowAck)

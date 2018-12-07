@@ -18,7 +18,6 @@ DIFF_TOOL=diff
 failures=2
 
 master() {
-    mkdir -p ${LOGS}
     touch ${LOGS}/m.txt
     ${MASTER} -N ${NSERVERS} >"${LOGS}/m.txt" 2>&1 &
     tail -f ${LOGS}/m.txt &

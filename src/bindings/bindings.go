@@ -39,25 +39,28 @@ type Parameters struct {
 	writers        []*bufio.Writer
 	id             int32
 	retries        int32
+
+	repChan chan *genericsmrproto.ProposeReplyTS
 }
 
 func NewParameters(masterAddr string, masterPort int, verbose bool, leaderless bool, fast bool, localReads bool) *Parameters {
 	return &Parameters{
-		masterAddr,
-		masterPort,
-		verbose,
-		localReads,
-		0,
-		0,
-		leaderless,
-		fast,
-		0,
-		nil,
-		nil,
-		nil,
-		nil,
-		0,
-		10}
+		masterAddr:     masterAddr,
+		masterPort:     masterPort,
+		verbose:        verbose,
+		localReads:     localReads,
+		closestReplica: 0,
+		Leader:         0,
+		leaderless:     leaderless,
+		isFast:         fast,
+		n:              0,
+		replicaLists:   nil,
+		servers:        nil,
+		readers:        nil,
+		writers:        nil,
+		id:             0,
+		retries:        10,
+	}
 }
 
 func (b *Parameters) Connect() error {
@@ -140,6 +143,8 @@ func (b *Parameters) Connect() error {
 		log.Printf("The Leader is replica %d\n", b.Leader)
 	}
 
+	b.repChan = make(chan *genericsmrproto.ProposeReplyTS, b.n)
+
 	for _, i := range toConnect {
 		log.Println("Connection to ", i, " -> ", b.replicaLists[i])
 		b.servers[i], err = net.DialTimeout("tcp", b.replicaLists[i], 10*time.Second)
@@ -149,6 +154,17 @@ func (b *Parameters) Connect() error {
 		} else {
 			b.readers[i] = bufio.NewReader(b.servers[i])
 			b.writers[i] = bufio.NewWriter(b.servers[i])
+
+			if b.isFast {
+				go func(rep int) {
+					for {
+						reply := new(genericsmrproto.ProposeReplyTS)
+						reply.Unmarshal(b.readers[rep])
+						b.repChan <- reply
+						// TODO handle errors
+					}
+				}(i)
+			}
 		}
 	}
 
@@ -245,7 +261,11 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 			}
 		}
 
-		value, err = b.waitReplies(submitter, args.CommandId)
+		if b.isFast {
+			value, err = b.fastWaitReplies(args.CommandId)
+		} else {
+			value, err = b.waitReplies(submitter, args.CommandId)
+		}
 
 		if err != nil {
 
@@ -272,6 +292,22 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	}
 
 	return value
+}
+
+func (b *Parameters) fastWaitReplies(cmdId int32) (state.Value, error) {
+	for {
+		rep := <-b.repChan
+		if rep.CommandId == cmdId {
+			if rep.OK == TRUE {
+				ret := rep.Value
+				return ret, nil
+			} else {
+				return state.NIL(), errors.New("Failed to receive a response.")
+			}
+		}
+	}
+
+	return nil, nil
 }
 
 func (b *Parameters) waitReplies(submitter int,

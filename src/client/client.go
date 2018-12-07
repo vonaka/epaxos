@@ -102,7 +102,8 @@ func main() {
 		fmt.Printf("chain %d-1\n", to_ms(after.UnixNano()))
 	}
 
-	fmt.Printf(proxy.Stats() + "\n")
+	// FIXME: with `f` option `proxy.Stats()` might block
+	// fmt.Printf(proxy.Stats() + "\n")
 
 	proxy.Disconnect()
 

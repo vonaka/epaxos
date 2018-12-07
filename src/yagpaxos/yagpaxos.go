@@ -144,7 +144,7 @@ func (r *Replica) run() {
 
 	go func() {
 		for !r.Shutdown {
-			time.Sleep(100*r.cs.maxLatency)
+			time.Sleep(100 * r.cs.maxLatency)
 			r.execute()
 		}
 	}()

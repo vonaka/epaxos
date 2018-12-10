@@ -490,15 +490,15 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 			_, exists := cmdIds[cmdId]
 			if !exists {
 				cmdIds[cmdId] = struct{}{}
-				r.deps[cmdId] = nil
+				r.deps[cmdId] = yagpaxosproto.NilDepSet()
 			}
-			if r.deps[cmdId] == nil &&
+			if r.deps[cmdId].IsNil() &&
 				(p == COMMIT ||
 					(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot)) {
 				r.phases[cmdId] = newLeaderAck.Phases[cmdId]
 				r.cmds[cmdId] = newLeaderAck.Cmds[cmdId]
 				r.deps[cmdId] = newLeaderAck.Deps[cmdId]
-			} else if r.deps[cmdId] == nil {
+			} else if r.deps[cmdId].IsNil() {
 				someMsg := moreThanFourth(cmdId)
 				if someMsg != nil {
 					r.phases[cmdId] = SLOW_ACCEPT
@@ -651,7 +651,7 @@ func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
 }
 
-/* For test only
+/* For the test only
 
 func (r *Replica) executeCmd(cmdId int32) {
 	r.Lock()
@@ -686,12 +686,14 @@ func (r *Replica) execute() {
 		}
 
 		exec := true
-		for depId := range r.deps[cmdId] {
+		r.deps[cmdId].Iter(func(depId int32) bool {
 			if r.phases[depId] != DELIVER {
 				exec = false
-				break
+				return true
 			}
-		}
+			return false
+		})
+
 		if !exec {
 			continue
 		}
@@ -705,7 +707,7 @@ func (r *Replica) execute() {
 		v := cmd.Execute(r.State)
 
 		p, exists := r.proposes[cmdId]
-		if /*r.status != LEADER ||*/ !r.Dreply || !exists {
+		if !r.Dreply || !exists {
 			continue
 		}
 

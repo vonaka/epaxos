@@ -228,7 +228,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 
 	if !exists {
 		fastQuorumSize := 3*r.N/4 + 1
-		waitFor := 100 * r.cs.maxLatency // FIXME
+		waitFor := 2 * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
@@ -334,7 +334,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	qs, exists := r.slowAckQuorumSets[msg.CommandId]
 	if !exists {
 		slowQuorumSize := r.N/2 + 1
-		waitFor := 100 * r.cs.maxLatency // FIXME
+		waitFor := 2 * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
 			slowAck2 := e2.(*yagpaxosproto.MSlowAck)
@@ -730,14 +730,16 @@ type quorum struct {
 
 type quorumSet struct {
 	sync.Mutex
-	neededSize    int
-	quorums       map[int]*quorum
-	leaderQuorum  *quorum
-	biggestQuorum *quorum
-	related       func(interface{}, interface{}) bool
-	wakeupIf      func() bool
-	out           chan struct{}
-	stop          chan struct{}
+	neededSize     int
+	quorums        map[int]*quorum
+	leaderQuorum   *quorum
+	biggestQuorum  *quorum
+	related        func(interface{}, interface{}) bool
+	wakeupIf       func() bool
+	out            chan struct{}
+	stop           chan struct{}
+	called         bool
+	onlyWithLeader bool
 }
 
 func newQuorumSet(size int, waitFor time.Duration,
@@ -745,22 +747,25 @@ func newQuorumSet(size int, waitFor time.Duration,
 	wakeupIf func() bool, handler func(*quorum),
 	onlyWithLeader bool) *quorumSet {
 	qs := &quorumSet{
-		neededSize:    size,
-		quorums:       make(map[int]*quorum, size),
-		leaderQuorum:  nil,
-		biggestQuorum: nil,
-		related:       relation,
-		wakeupIf:      wakeupIf,
-		out:           make(chan struct{}, size),
-		stop:          make(chan struct{}, 1),
+		neededSize:     size,
+		quorums:        make(map[int]*quorum, size),
+		leaderQuorum:   nil,
+		biggestQuorum:  nil,
+		related:        relation,
+		wakeupIf:       wakeupIf,
+		out:            make(chan struct{}, size),
+		stop:           make(chan struct{}, 1),
+		called:         false,
+		onlyWithLeader: onlyWithLeader,
 	}
 
 	go func() {
-		for {
+		stop := false
+		for !stop {
 			select {
 			case <-qs.out:
 				var q *quorum
-				if onlyWithLeader {
+				if qs.onlyWithLeader {
 					qs.Lock()
 					q = qs.leaderQuorum
 					qs.Unlock()
@@ -772,7 +777,7 @@ func newQuorumSet(size int, waitFor time.Duration,
 				handler(q)
 			case <-qs.stop:
 				var q *quorum
-				if onlyWithLeader {
+				if qs.onlyWithLeader {
 					qs.Lock()
 					q = qs.leaderQuorum
 					qs.Unlock()
@@ -782,7 +787,7 @@ func newQuorumSet(size int, waitFor time.Duration,
 					qs.Unlock()
 				}
 				handler(q)
-				break
+				stop = true
 			}
 		}
 	}()
@@ -804,24 +809,23 @@ func (q *quorum) getLeaderMsg() interface{} {
 
 func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 	if qs.neededSize < 1 {
-		if qs.wakeupIf() {
+		if !qs.called && qs.wakeupIf() &&
+			(!qs.onlyWithLeader || qs.leaderQuorum != nil) {
+			qs.called = true
 			qs.out <- struct{}{}
 		}
 		return
 	}
 
 	qs.Lock()
+
+	if qs.called {
+		qs.Unlock()
+		return
+	}
+
 	for _, q := range qs.quorums {
 		if qs.related(q.elements[0], e) {
-			if q.size >= qs.neededSize &&
-				(!fromLeader || q.leaderId != -1) {
-				if qs.wakeupIf() {
-					qs.out <- struct{}{}
-				}
-				qs.Unlock()
-				return
-			}
-
 			if q.size >= qs.neededSize {
 				q.elements = append(q.elements, e)
 			} else {
@@ -835,8 +839,9 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 			if qs.biggestQuorum == nil || q.size > qs.biggestQuorum.size {
 				qs.biggestQuorum = q
 			}
-
-			if q.size >= qs.neededSize && qs.wakeupIf() {
+			if q.size >= qs.neededSize && qs.wakeupIf() &&
+				(!qs.onlyWithLeader || qs.leaderQuorum != nil) {
+				qs.called = true
 				qs.out <- struct{}{}
 			}
 			qs.Unlock()
@@ -858,9 +863,11 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 		qs.leaderQuorum = q
 	}
 	qs.biggestQuorum = q
-	qs.Unlock()
 
-	if qs.neededSize < 2 && qs.wakeupIf() {
+	if qs.neededSize < 2 && qs.wakeupIf() &&
+		(!qs.onlyWithLeader || qs.leaderQuorum != nil) {
+		qs.called = true
 		qs.out <- struct{}{}
 	}
+	qs.Unlock()
 }

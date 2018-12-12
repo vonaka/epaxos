@@ -1,6 +1,7 @@
 package yagpaxos
 
 import (
+	"errors"
 	"fastrpc"
 	"genericsmr"
 	"genericsmrproto"
@@ -22,7 +23,8 @@ type Replica struct {
 	cmds   map[int32]state.Command
 	deps   map[int32]yagpaxosproto.DepSet
 
-	proposes map[int32]*genericsmr.Propose
+	committer *committer
+	proposes  map[int32]*genericsmr.Propose
 
 	slowAckQuorumSets      map[int32]*quorumSet
 	fastAckQuorumSets      map[int32]*quorumSet
@@ -83,7 +85,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cmds:   make(map[int32]state.Command),
 		deps:   make(map[int32]yagpaxosproto.DepSet),
 
-		proposes: make(map[int32]*genericsmr.Propose),
+		committer: newCommitter(),
+		proposes:  make(map[int32]*genericsmr.Propose),
 
 		slowAckQuorumSets:      make(map[int32]*quorumSet),
 		fastAckQuorumSets:      make(map[int32]*quorumSet),
@@ -142,12 +145,12 @@ func (r *Replica) run() {
 
 	go r.WaitForClientConnections()
 
-	go func() {
+	/*go func() {
 		for !r.Shutdown {
 			time.Sleep(100 * r.cs.maxLatency)
 			r.execute()
 		}
-	}()
+	}()*/
 
 	for !r.Shutdown {
 		select {
@@ -212,6 +215,12 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		Command:   msg.Command,
 		Dep:       r.deps[msg.CommandId],
 	}
+	if r.status == LEADER {
+		r.committer.add(msg.CommandId)
+		fastAck.AcceptId = r.committer.getInstance(msg.CommandId)
+	} else {
+		fastAck.AcceptId = -1
+	}
 	r.sendToAll(fastAck, r.cs.fastAckRPC)
 	go r.handleFastAck(fastAck)
 }
@@ -228,7 +237,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 
 	if !exists {
 		fastQuorumSize := 3*r.N/4 + 1
-		waitFor := 2 * r.cs.maxLatency // FIXME
+		waitFor := 5 * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
@@ -275,7 +284,8 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			Replica:   r.Id,
 			CommandId: leaderFastAck.CommandId,
 			Command:   leaderFastAck.Command,
-			Dep:       r.deps[leaderFastAck.CommandId],
+			Dep:       leaderFastAck.Dep,
+			AcceptId:  leaderFastAck.AcceptId,
 		}
 
 		if r.status == FOLLOWER {
@@ -310,7 +320,7 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.Lock()
 	defer func() {
 		r.Unlock()
-		r.execute()
+		r.commitMsg(msg)
 	}()
 
 	if (r.status != LEADER && r.status != FOLLOWER) ||
@@ -334,7 +344,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	qs, exists := r.slowAckQuorumSets[msg.CommandId]
 	if !exists {
 		slowQuorumSize := r.N/2 + 1
-		waitFor := 2 * r.cs.maxLatency // FIXME
+		waitFor := 5 * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
 			slowAck2 := e2.(*yagpaxosproto.MSlowAck)
@@ -379,6 +389,7 @@ func (r *Replica) handleSlowAcks(q *quorum) {
 		CommandId: leaderSlowAck.CommandId,
 		Command:   r.cmds[leaderSlowAck.CommandId],
 		Dep:       r.deps[leaderSlowAck.CommandId],
+		AcceptId:  r.committer.getInstance(leaderSlowAck.CommandId),
 	}
 	r.sendToAll(commit, r.cs.commitRPC)
 	go r.handleCommit(commit)
@@ -598,6 +609,7 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 			CommandId: cmdId,
 			Command:   r.cmds[cmdId],
 			Dep:       r.deps[cmdId],
+			AcceptId:  -2, // FIXME
 		}
 		r.sendToAll(commit, r.cs.commitRPC)
 		go r.handleCommit(commit)
@@ -649,6 +661,50 @@ func leader(ballot int32, repNum int) int32 {
 
 func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
+}
+
+func (r *Replica) commitMsg(msg *yagpaxosproto.MCommit) {
+	f := func(cmdId int32) {
+		r.Lock()
+		defer r.Unlock()
+
+		if r.phases[cmdId] != COMMIT {
+			return
+		}
+		r.phases[cmdId] = DELIVER
+
+		if !r.Exec {
+			return
+		}
+		cmd := r.cmds[cmdId]
+		v := cmd.Execute(r.State)
+
+		p, exists := r.proposes[cmdId]
+		if !exists || !r.Dreply {
+			return
+		}
+
+		proposeReply := &genericsmrproto.ProposeReplyTS{
+			OK:        genericsmr.TRUE,
+			CommandId: cmdId,
+			Value:     v,
+			Timestamp: p.Timestamp,
+		}
+		r.ReplyProposeTS(proposeReply, p.Reply, p.Mutex)
+	}
+
+	if r.status == LEADER {
+		r.committer.deliver(msg.CommandId, f)
+	} else if r.status == FOLLOWER {
+		if msg.AcceptId < 0 {
+			return // TODO: handle this
+		}
+		r.committer.addTo(msg.CommandId, msg.AcceptId)
+		err := r.committer.safeDeliver(msg.CommandId, msg.Dep, f)
+		if err != nil {
+			// TODO: retry later
+		}
+	}
 }
 
 /* For the test only
@@ -870,4 +926,108 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 		qs.out <- struct{}{}
 	}
 	qs.Unlock()
+}
+
+type committer struct {
+	sync.RWMutex
+	next      int
+	first     int
+	delivered int
+	cmdIds    map[int] int32
+	instances map[int32] int
+}
+
+func newCommitter() *committer {
+	c := &committer{
+		next:      0,
+		first:     -1,
+		delivered: -1,
+		cmdIds:    make(map[int] int32, 10), // FIXME
+		instances: make(map[int32] int, 10), // FIXME
+	}
+
+	go func() {
+		for {
+			time.Sleep(8 * time.Second) // FIXME
+			c.Lock()
+			for i := c.first + 1; i <= c.delivered; i++ {
+				// delete(c.instances, c.cmdIds[i])
+				// we can't delete c.instance so simply,
+				// as it can be used in getInstance
+				delete(c.cmdIds, i)
+			}
+			c.first = c.delivered
+			c.Unlock()
+		}
+	}()
+
+	return c
+}
+
+func (c *committer) getInstance(cmdId int32) int {
+	c.RLock()
+	defer c.RUnlock()
+	return c.instances[cmdId]
+}
+
+func (c *committer) add(cmdId int32) {
+	c.Lock()
+	defer c.Unlock()
+
+	c.cmdIds[c.next] = cmdId
+	c.instances[cmdId] = c.next
+	c.next++
+}
+
+func (c *committer) addTo(cmdId int32, instance int) {
+	c.Lock()
+	defer c.Unlock()
+
+	c.cmdIds[instance] = cmdId
+	c.instances[cmdId] = instance
+}
+
+func (c *committer) deliver(cmdId int32, f func(int32)) {
+	c.RLock()
+	i := c.delivered + 1
+	j := c.instances[cmdId]
+	for ; i <= j; i++ {
+		f(c.cmdIds[i])
+	}
+	c.RUnlock()
+
+	c.Lock()
+	if j > c.delivered {
+		c.delivered = j
+	}
+	c.Unlock()
+}
+
+func (c *committer) safeDeliver(cmdId int32, cmdDeps yagpaxosproto.DepSet,
+	f func(int32)) error {
+	c.Lock()
+	defer c.Unlock()
+
+	if cmdDeps.Iter(func(depId int32) bool {
+		_, exists := c.instances[depId]
+		return !exists
+	}) {
+		return errors.New("some dependency is no commited yet")
+	}
+	continuous := true
+	i := c.delivered + 1
+	j := c.instances[cmdId]
+	for ; i <= j; i++ {
+		_, exists := c.cmdIds[i]
+		if !exists {
+			continuous = false
+		} else {
+			f(c.cmdIds[i])
+			if continuous {
+				c.delivered = i
+			}
+		}
+	}
+
+	return nil
 }

@@ -202,8 +202,8 @@ func (t *MFastAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MFastAckCache struct {
-	mu	sync.Mutex
-	cache	[]*MFastAck
+	mu    sync.Mutex
+	cache []*MFastAck
 }
 
 func NewMFastAckCache() *MFastAckCache {
@@ -290,8 +290,8 @@ func (t *MCommit) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MCommitCache struct {
-	mu	sync.Mutex
-	cache	[]*MCommit
+	mu    sync.Mutex
+	cache []*MCommit
 }
 
 func NewMCommitCache() *MCommitCache {
@@ -370,8 +370,8 @@ func (t *MSlowAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MSlowAckCache struct {
-	mu	sync.Mutex
-	cache	[]*MSlowAck
+	mu    sync.Mutex
+	cache []*MSlowAck
 }
 
 func NewMSlowAckCache() *MSlowAckCache {
@@ -442,8 +442,8 @@ func (t *MNewLeader) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MNewLeaderCache struct {
-	mu	sync.Mutex
-	cache	[]*MNewLeader
+	mu    sync.Mutex
+	cache []*MNewLeader
 }
 
 func NewMNewLeaderCache() *MNewLeaderCache {
@@ -504,8 +504,8 @@ func (t *MSyncAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MSyncAckCache struct {
-	mu	sync.Mutex
-	cache	[]*MSyncAck
+	mu    sync.Mutex
+	cache []*MSyncAck
 }
 
 func NewMSyncAckCache() *MSyncAckCache {
@@ -566,8 +566,8 @@ func (t *DepSet) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type DepSetCache struct {
-	mu	sync.Mutex
-	cache	[]*DepSet
+	mu    sync.Mutex
+	cache []*DepSet
 }
 
 func NewDepSetCache() *DepSetCache {

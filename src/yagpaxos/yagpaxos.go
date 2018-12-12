@@ -933,8 +933,8 @@ type committer struct {
 	next      int
 	first     int
 	delivered int
-	cmdIds    map[int] int32
-	instances map[int32] int
+	cmdIds    map[int]int32
+	instances map[int32]int
 }
 
 func newCommitter() *committer {
@@ -942,8 +942,8 @@ func newCommitter() *committer {
 		next:      0,
 		first:     -1,
 		delivered: -1,
-		cmdIds:    make(map[int] int32, 10), // FIXME
-		instances: make(map[int32] int, 10), // FIXME
+		cmdIds:    make(map[int]int32, 10), // FIXME
+		instances: make(map[int32]int, 10), // FIXME
 	}
 
 	go func() {

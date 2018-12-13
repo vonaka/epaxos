@@ -85,8 +85,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cmds:   make(map[int32]state.Command),
 		deps:   make(map[int32]yagpaxosproto.DepSet),
 
-		committer: newCommitter(),
-		proposes:  make(map[int32]*genericsmr.Propose),
+		proposes: make(map[int32]*genericsmr.Propose),
 
 		slowAckQuorumSets:      make(map[int32]*quorumSet),
 		fastAckQuorumSets:      make(map[int32]*quorumSet),
@@ -112,6 +111,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 		},
 	}
+	r.committer = newCommitter(&(r.Mutex))
 
 	r.cs.fastAckRPC =
 		r.RegisterRPC(new(yagpaxosproto.MFastAck), r.cs.fastAckChan)
@@ -318,10 +318,7 @@ func (r *Replica) handleFastAcks(q *quorum) {
 
 func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.Lock()
-	defer func() {
-		r.Unlock()
-		r.commitMsg(msg)
-	}()
+	defer r.Unlock()
 
 	if (r.status != LEADER && r.status != FOLLOWER) ||
 		r.phases[msg.CommandId] == DELIVER {
@@ -331,6 +328,8 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.phases[msg.CommandId] = COMMIT
 	r.cmds[msg.CommandId] = msg.Command
 	r.deps[msg.CommandId] = msg.Dep
+
+	r.commitMsg(msg)
 }
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
@@ -665,9 +664,6 @@ func inConflict(c1, c2 state.Command) bool {
 
 func (r *Replica) commitMsg(msg *yagpaxosproto.MCommit) {
 	f := func(cmdId int32) {
-		r.Lock()
-		defer r.Unlock()
-
 		if r.phases[cmdId] != COMMIT {
 			return
 		}
@@ -929,7 +925,6 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 }
 
 type committer struct {
-	sync.RWMutex
 	next      int
 	first     int
 	delivered int
@@ -937,7 +932,7 @@ type committer struct {
 	instances map[int32]int
 }
 
-func newCommitter() *committer {
+func newCommitter(m *sync.Mutex) *committer {
 	c := &committer{
 		next:      0,
 		first:     -1,
@@ -949,7 +944,7 @@ func newCommitter() *committer {
 	go func() {
 		for {
 			time.Sleep(8 * time.Second) // FIXME
-			c.Lock()
+			m.Lock()
 			for i := c.first + 1; i <= c.delivered; i++ {
 				// delete(c.instances, c.cmdIds[i])
 				// we can't delete c.instance so simply,
@@ -957,7 +952,7 @@ func newCommitter() *committer {
 				delete(c.cmdIds, i)
 			}
 			c.first = c.delivered
-			c.Unlock()
+			m.Unlock()
 		}
 	}()
 
@@ -965,49 +960,34 @@ func newCommitter() *committer {
 }
 
 func (c *committer) getInstance(cmdId int32) int {
-	c.RLock()
-	defer c.RUnlock()
 	return c.instances[cmdId]
 }
 
 func (c *committer) add(cmdId int32) {
-	c.Lock()
-	defer c.Unlock()
-
 	c.cmdIds[c.next] = cmdId
 	c.instances[cmdId] = c.next
 	c.next++
 }
 
 func (c *committer) addTo(cmdId int32, instance int) {
-	c.Lock()
-	defer c.Unlock()
-
 	c.cmdIds[instance] = cmdId
 	c.instances[cmdId] = instance
 }
 
 func (c *committer) deliver(cmdId int32, f func(int32)) {
-	c.RLock()
 	i := c.delivered + 1
 	j := c.instances[cmdId]
 	for ; i <= j; i++ {
 		f(c.cmdIds[i])
 	}
-	c.RUnlock()
 
-	c.Lock()
 	if j > c.delivered {
 		c.delivered = j
 	}
-	c.Unlock()
 }
 
 func (c *committer) safeDeliver(cmdId int32, cmdDeps yagpaxosproto.DepSet,
 	f func(int32)) error {
-	c.Lock()
-	defer c.Unlock()
-
 	if cmdDeps.Iter(func(depId int32) bool {
 		_, exists := c.instances[depId]
 		return !exists

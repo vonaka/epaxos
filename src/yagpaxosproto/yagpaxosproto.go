@@ -25,7 +25,6 @@ type MCommit struct {
 	CommandId int32
 	Command   state.Command
 	Dep       DepSet
-	AcceptId  int
 }
 
 type MSlowAck struct {
@@ -202,8 +201,8 @@ func (t *MFastAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MFastAckCache struct {
-	mu    sync.Mutex
-	cache []*MFastAck
+	mu	sync.Mutex
+	cache	[]*MFastAck
 }
 
 func NewMFastAckCache() *MFastAckCache {
@@ -290,8 +289,8 @@ func (t *MCommit) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MCommitCache struct {
-	mu    sync.Mutex
-	cache []*MCommit
+	mu	sync.Mutex
+	cache	[]*MCommit
 }
 
 func NewMCommitCache() *MCommitCache {
@@ -335,16 +334,6 @@ func (t *MCommit) Marshal(wire io.Writer) {
 	wire.Write(bs)
 	t.Command.Marshal(wire)
 	t.Dep.Marshal(wire)
-	tmp64 := t.AcceptId
-	bs[0] = byte(tmp64)
-	bs[1] = byte(tmp64 >> 8)
-	bs[2] = byte(tmp64 >> 16)
-	bs[3] = byte(tmp64 >> 24)
-	bs[4] = byte(tmp64 >> 32)
-	bs[5] = byte(tmp64 >> 40)
-	bs[6] = byte(tmp64 >> 48)
-	bs[7] = byte(tmp64 >> 56)
-	wire.Write(bs)
 }
 
 func (t *MCommit) Unmarshal(wire io.Reader) error {
@@ -358,10 +347,6 @@ func (t *MCommit) Unmarshal(wire io.Reader) error {
 	t.CommandId = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
 	t.Command.Unmarshal(wire)
 	t.Dep.Unmarshal(wire)
-	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
-		return err
-	}
-	t.AcceptId = int((uint64(bs[0]) | (uint64(bs[1]) << 8) | (uint64(bs[2]) << 16) | (uint64(bs[3]) << 24) | (uint64(bs[4]) << 32) | (uint64(bs[5]) << 40) | (uint64(bs[6]) << 48) | (uint64(bs[7]) << 56)))
 	return nil
 }
 
@@ -370,8 +355,8 @@ func (t *MSlowAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MSlowAckCache struct {
-	mu    sync.Mutex
-	cache []*MSlowAck
+	mu	sync.Mutex
+	cache	[]*MSlowAck
 }
 
 func NewMSlowAckCache() *MSlowAckCache {
@@ -442,8 +427,8 @@ func (t *MNewLeader) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MNewLeaderCache struct {
-	mu    sync.Mutex
-	cache []*MNewLeader
+	mu	sync.Mutex
+	cache	[]*MNewLeader
 }
 
 func NewMNewLeaderCache() *MNewLeaderCache {
@@ -504,8 +489,8 @@ func (t *MSyncAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MSyncAckCache struct {
-	mu    sync.Mutex
-	cache []*MSyncAck
+	mu	sync.Mutex
+	cache	[]*MSyncAck
 }
 
 func NewMSyncAckCache() *MSyncAckCache {
@@ -566,8 +551,8 @@ func (t *DepSet) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type DepSetCache struct {
-	mu    sync.Mutex
-	cache []*DepSet
+	mu	sync.Mutex
+	cache	[]*DepSet
 }
 
 func NewDepSetCache() *DepSetCache {

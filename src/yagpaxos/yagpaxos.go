@@ -1,10 +1,10 @@
 package yagpaxos
 
 import (
-	"errors"
 	"fastrpc"
 	"genericsmr"
 	"genericsmrproto"
+	"log"
 	"state"
 	"sync"
 	"time"
@@ -322,7 +322,10 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.cmds[msg.CommandId] = msg.Command
 	r.deps[msg.CommandId] = msg.Dep
 
-	r.commitMsg(msg)
+	err := r.commitMsg(msg)
+	if err != nil && err != noDep {
+		log.Fatal(err)
+	}
 }
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
@@ -655,7 +658,19 @@ func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
 }
 
-func (r *Replica) commitMsg(msg *yagpaxosproto.MCommit) {
+type DeliverError string
+
+func (de DeliverError) Error() string {
+	return string(de)
+}
+
+const (
+	noDep    = DeliverError("some dependency is no commited yet")
+	incOrder = DeliverError("inconsistent order")
+	impCase  = DeliverError("impossible case")
+)
+
+func (r *Replica) commitMsg(msg *yagpaxosproto.MCommit) error {
 	f := func(cmdId int32) {
 		if r.phases[cmdId] != COMMIT {
 			return
@@ -685,15 +700,19 @@ func (r *Replica) commitMsg(msg *yagpaxosproto.MCommit) {
 	if r.status == LEADER {
 		r.committer.deliver(msg.CommandId, f)
 	} else if r.status == FOLLOWER {
-		if msg.AcceptId < 0 {
-			return // TODO: handle this
+		if msg.AcceptId == -1 {
+			return incOrder
+		} else if msg.AcceptId == -2 {
+			// TODO: handle this (recovery)
+			return nil
+		} else if msg.AcceptId < 0 {
+			return impCase
 		}
 		r.committer.addTo(msg.CommandId, msg.AcceptId)
-		err := r.committer.safeDeliver(msg.CommandId, msg.Dep, f)
-		if err != nil {
-			// TODO: retry later
-		}
+		return r.committer.safeDeliver(msg.CommandId, msg.Dep, f)
 	}
+
+	return nil
 }
 
 type quorum struct {
@@ -918,7 +937,7 @@ func (c *committer) safeDeliver(cmdId int32, cmdDeps yagpaxosproto.DepSet,
 		_, exists := c.instances[depId]
 		return !exists
 	}) {
-		return errors.New("some dependency is no commited yet")
+		return noDep
 	}
 	continuous := true
 	i := c.delivered + 1

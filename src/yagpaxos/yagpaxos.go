@@ -145,13 +145,6 @@ func (r *Replica) run() {
 
 	go r.WaitForClientConnections()
 
-	/*go func() {
-		for !r.Shutdown {
-			time.Sleep(100 * r.cs.maxLatency)
-			r.execute()
-		}
-	}()*/
-
 	for !r.Shutdown {
 		select {
 		case propose := <-r.ProposeChan:
@@ -237,7 +230,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 
 	if !exists {
 		fastQuorumSize := 3*r.N/4 + 1
-		waitFor := time.Duration(r.N + 1) * r.cs.maxLatency // FIXME
+		waitFor := time.Duration(r.N+1) * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
@@ -343,7 +336,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	qs, exists := r.slowAckQuorumSets[msg.CommandId]
 	if !exists {
 		slowQuorumSize := r.N/2 + 1
-		waitFor := time.Duration(r.N + 1) * r.cs.maxLatency // FIXME
+		waitFor := time.Duration(r.N+1) * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
 			slowAck2 := e2.(*yagpaxosproto.MSlowAck)
@@ -700,76 +693,6 @@ func (r *Replica) commitMsg(msg *yagpaxosproto.MCommit) {
 		if err != nil {
 			// TODO: retry later
 		}
-	}
-}
-
-/* For the test only
-
-func (r *Replica) executeCmd(cmdId int32) {
-	r.Lock()
-	_, exists := r.proposes[cmdId]
-	if r.phases[cmdId] != COMMIT || !exists {
-		r.Unlock()
-		return
-	}
-	r.phases[cmdId] = DELIVER
-	r.Unlock()
-	cmd := r.cmds[cmdId]
-	v := cmd.Execute(r.State)
-
-	proposeReply := &genericsmrproto.ProposeReplyTS{
-		OK:        genericsmr.TRUE,
-		CommandId: cmdId,
-		Value:     v,
-		Timestamp: r.proposes[cmdId].Timestamp,
-	}
-	r.ReplyProposeTS(proposeReply,
-		r.proposes[cmdId].Reply,
-		r.proposes[cmdId].Mutex)
-} */
-
-func (r *Replica) execute() {
-	r.Lock()
-	defer r.Unlock()
-
-	for cmdId, p := range r.phases {
-		if p != COMMIT {
-			continue
-		}
-
-		exec := true
-		r.deps[cmdId].Iter(func(depId int32) bool {
-			if r.phases[depId] != DELIVER {
-				exec = false
-				return true
-			}
-			return false
-		})
-
-		if !exec {
-			continue
-		}
-
-		r.phases[cmdId] = DELIVER
-
-		if !r.Exec {
-			continue
-		}
-		cmd := r.cmds[cmdId]
-		v := cmd.Execute(r.State)
-
-		p, exists := r.proposes[cmdId]
-		if !r.Dreply || !exists {
-			continue
-		}
-
-		proposeReply := &genericsmrproto.ProposeReplyTS{
-			OK:        genericsmr.TRUE,
-			CommandId: cmdId,
-			Value:     v,
-			Timestamp: p.Timestamp,
-		}
-		r.ReplyProposeTS(proposeReply, p.Reply, p.Mutex)
 	}
 }
 

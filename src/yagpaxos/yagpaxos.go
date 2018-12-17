@@ -26,8 +26,8 @@ type Replica struct {
 	committer *committer
 	proposes  map[int32]*genericsmr.Propose
 
-	slowAckQuorumSets      map[int32]*quorumSet
 	fastAckQuorumSets      map[int32]*quorumSet
+	slowAckQuorumSets      map[int32]*quorumSet
 	newLeaderAckQuorumSets map[int32]*quorumSet
 	syncAckQuorumSets      map[int32]*quorumSet
 
@@ -87,8 +87,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 
 		proposes: make(map[int32]*genericsmr.Propose),
 
-		slowAckQuorumSets:      make(map[int32]*quorumSet),
 		fastAckQuorumSets:      make(map[int32]*quorumSet),
+		slowAckQuorumSets:      make(map[int32]*quorumSet),
 		newLeaderAckQuorumSets: make(map[int32]*quorumSet),
 		syncAckQuorumSets:      make(map[int32]*quorumSet),
 
@@ -237,7 +237,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 
 	if !exists {
 		fastQuorumSize := 3*r.N/4 + 1
-		waitFor := 5 * r.cs.maxLatency // FIXME
+		waitFor := time.Duration(r.N + 1) * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
@@ -266,16 +266,16 @@ func (r *Replica) handleFastAcks(q *quorum) {
 	fastQuorumSize := 3*r.N/4 + 1
 	slowQuorumSize := r.N/2 + 1
 
-	if q.size < slowQuorumSize {
-		return
-	}
-
 	leaderMsg := q.getLeaderMsg()
 	if leaderMsg == nil {
 		return
 	}
 	leaderFastAck := leaderMsg.(*yagpaxosproto.MFastAck)
 	if r.ballot != leaderFastAck.Ballot {
+		return
+	}
+
+	if r.fastAckQuorumSets[leaderFastAck.CommandId].totalSize < slowQuorumSize {
 		return
 	}
 
@@ -343,7 +343,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	qs, exists := r.slowAckQuorumSets[msg.CommandId]
 	if !exists {
 		slowQuorumSize := r.N/2 + 1
-		waitFor := 5 * r.cs.maxLatency // FIXME
+		waitFor := time.Duration(r.N + 1) * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
 			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
 			slowAck2 := e2.(*yagpaxosproto.MSlowAck)
@@ -783,6 +783,7 @@ type quorum struct {
 type quorumSet struct {
 	sync.Mutex
 	neededSize     int
+	totalSize      int
 	quorums        map[int]*quorum
 	leaderQuorum   *quorum
 	biggestQuorum  *quorum
@@ -800,6 +801,7 @@ func newQuorumSet(size int, waitFor time.Duration,
 	onlyWithLeader bool) *quorumSet {
 	qs := &quorumSet{
 		neededSize:     size,
+		totalSize:      0,
 		quorums:        make(map[int]*quorum, size),
 		leaderQuorum:   nil,
 		biggestQuorum:  nil,
@@ -860,6 +862,9 @@ func (q *quorum) getLeaderMsg() interface{} {
 }
 
 func (qs *quorumSet) add(e interface{}, fromLeader bool) {
+	qs.Lock()
+	defer qs.Unlock()
+
 	if qs.neededSize < 1 {
 		if !qs.called && qs.wakeupIf() &&
 			(!qs.onlyWithLeader || qs.leaderQuorum != nil) {
@@ -869,10 +874,10 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 		return
 	}
 
-	qs.Lock()
+	// TODO: deal with duplicates
+	qs.totalSize++
 
 	if qs.called {
-		qs.Unlock()
 		return
 	}
 
@@ -896,7 +901,6 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 				qs.called = true
 				qs.out <- struct{}{}
 			}
-			qs.Unlock()
 			return
 		}
 	}
@@ -921,7 +925,6 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 		qs.called = true
 		qs.out <- struct{}{}
 	}
-	qs.Unlock()
 }
 
 type committer struct {

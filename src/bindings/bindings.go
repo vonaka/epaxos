@@ -85,14 +85,21 @@ func (b *Parameters) Connect() error {
 	var rlReply *masterproto.GetReplicaListReply
 	for done := false; !done; {
 		rlReply = new(masterproto.GetReplicaListReply)
-		err = master.Call("Master.GetReplicaList", new(masterproto.GetReplicaListArgs), rlReply)
-		if err != nil {
-			log.Printf("Error making the GetReplicaList RPC")
-			master.Close()
-			return err
-		}
-		if rlReply.Ready {
-			done = true
+		// from https://stackoverflow.com/a/23330195/4262469
+		c := make(chan error, 1)
+		go func() { c <- master.Call("Master.GetReplicaList", new(masterproto.GetReplicaListArgs), rlReply) }()
+		select {
+		case err := <-c:
+			if err != nil {
+				log.Printf("Error making the GetReplicaList RPC")
+				master.Close()
+				return err
+			}
+			if rlReply.Ready {
+				done = true
+			}
+		case <-time.After(TIMEOUT):
+			log.Printf("GetReplicaList RPC timeout!")
 		}
 	}
 
@@ -121,7 +128,8 @@ func (b *Parameters) Connect() error {
 		}
 	}
 
-	log.Printf("node list %v, closest (alive) = (%v,%vms)", b.replicaLists, b.closestReplica, minLatency)
+	log.Printf("node list %v, closest (alive) = (%v,%vms)", b.replicaLists,
+		b.closestReplica, minLatency)
 
 	b.n = len(b.replicaLists)
 
@@ -138,6 +146,7 @@ func (b *Parameters) Connect() error {
 	} else {
 		toConnect = append(toConnect, b.closestReplica)
 	}
+
 	if !b.leaderless {
 		reply := new(masterproto.GetLeaderReply)
 		if err = master.Call("Master.GetLeader", new(masterproto.GetLeaderArgs), reply); err != nil {
@@ -146,15 +155,14 @@ func (b *Parameters) Connect() error {
 			return err
 		}
 		b.Leader = reply.LeaderId
-		if b.closestReplica != b.Leader {
-			if !b.isFast {
-				toConnect = append(toConnect, b.Leader)
-			}
+		if b.closestReplica != b.Leader && !b.isFast {
+			toConnect = append(toConnect, b.Leader)
 		}
 		log.Printf("The Leader is replica %d\n", b.Leader)
 	}
 
 	b.repChan = make(chan *genericsmrproto.ProposeReplyTS, b.n)
+
 
 	for _, i := range toConnect {
 		log.Println("Connection to ", i, " -> ", b.replicaLists[i])
@@ -250,7 +258,9 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	for err != nil {
 
 		submitter := b.Leader
-		if b.leaderless || ((args.Command.Op == state.GET || args.Command.Op == state.SCAN) && b.localReads) {
+		if b.leaderless ||
+			((args.Command.Op == state.GET || args.Command.Op == state.SCAN) &&
+			b.localReads) {
 			submitter = b.closestReplica
 		}
 

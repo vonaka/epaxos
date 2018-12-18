@@ -163,7 +163,6 @@ func (b *Parameters) Connect() error {
 
 	b.repChan = make(chan *genericsmrproto.ProposeReplyTS, b.n)
 
-
 	for _, i := range toConnect {
 		log.Println("Connection to ", i, " -> ", b.replicaLists[i])
 		b.servers[i], err = net.DialTimeout("tcp", b.replicaLists[i], 10*time.Second)
@@ -260,7 +259,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 		submitter := b.Leader
 		if b.leaderless ||
 			((args.Command.Op == state.GET || args.Command.Op == state.SCAN) &&
-			b.localReads) {
+				b.localReads) {
 			submitter = b.closestReplica
 		}
 

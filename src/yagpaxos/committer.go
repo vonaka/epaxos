@@ -71,24 +71,15 @@ func (c *committer) deliver(cmdId int32, f func(int32)) {
 
 func (c *committer) safeDeliver(cmdId int32, cmdDeps yagpaxosproto.DepSet,
 	f func(int32)) error {
-	if cmdDeps.Iter(func(depId int32) bool {
-		_, exists := c.instances[depId]
-		return !exists
-	}) {
-		return errors.New("some dependency is no commited yet")
-	}
-	continuous := true
 	i := c.delivered + 1
 	j := c.instances[cmdId]
 	for ; i <= j; i++ {
 		_, exists := c.cmdIds[i]
 		if !exists {
-			continuous = false
+			return errors.New("some dependency is no commited yet")
 		} else {
 			f(c.cmdIds[i])
-			if continuous {
-				c.delivered = i
-			}
+			c.delivered = i
 		}
 	}
 

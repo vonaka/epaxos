@@ -184,7 +184,7 @@ func Dial(addr string, connect bool) net.Conn {
 			// if not done yet, try again
 			log.Println("Connection error with ", addr, ": ", err)
 			if conn != nil {
-			   conn.Close()
+				conn.Close()
 			}
 		}
 	}

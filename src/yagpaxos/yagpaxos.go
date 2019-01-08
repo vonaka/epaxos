@@ -687,6 +687,7 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 	}
 
 	r.status = LEADER
+	r.cballot = r.ballot
 	for cmdId, p := range r.phases {
 		// TODO: send commit even if p == DELIVER
 		if p == COMMIT || p == DELIVER {

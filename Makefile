@@ -21,7 +21,7 @@ race: FLAGS += -race
 race: compile
 
 mrproper:
-	rm -rf pkg logs stable-store* bin/master bin/server bin/client \
+	rm -rf pkg logs $(STOREDIR) bin/master bin/server bin/client \
            src/github.com
 
 test: compile

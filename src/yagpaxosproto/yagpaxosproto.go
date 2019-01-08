@@ -62,6 +62,11 @@ type MSyncAck struct {
 	Ballot  int32
 }
 
+type MCollect struct {
+	Replica   int32
+	CommandId int32
+}
+
 func (m *MFastAck) New() fastrpc.Serializable {
 	return new(MFastAck)
 }
@@ -118,6 +123,10 @@ func (m *MSync) Unmarshal(r io.Reader) error {
 
 func (m *MSyncAck) New() fastrpc.Serializable {
 	return new(MSyncAck)
+}
+
+func (m *MCollect) New() fastrpc.Serializable {
+	return new(MCollect)
 }
 
 const SET_DEFAULT_LEN = 30
@@ -543,6 +552,68 @@ func (t *MSyncAck) Unmarshal(wire io.Reader) error {
 	}
 	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
 	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	return nil
+}
+
+func (t *MCollect) BinarySize() (nbytes int, sizeKnown bool) {
+	return 8, true
+}
+
+type MCollectCache struct {
+	mu    sync.Mutex
+	cache []*MCollect
+}
+
+func NewMCollectCache() *MCollectCache {
+	c := &MCollectCache{}
+	c.cache = make([]*MCollect, 0)
+	return c
+}
+
+func (p *MCollectCache) Get() *MCollect {
+	var t *MCollect
+	p.mu.Lock()
+	if len(p.cache) > 0 {
+		t = p.cache[len(p.cache)-1]
+		p.cache = p.cache[0:(len(p.cache) - 1)]
+	}
+	p.mu.Unlock()
+	if t == nil {
+		t = &MCollect{}
+	}
+	return t
+}
+func (p *MCollectCache) Put(t *MCollect) {
+	p.mu.Lock()
+	p.cache = append(p.cache, t)
+	p.mu.Unlock()
+}
+func (t *MCollect) Marshal(wire io.Writer) {
+	var b [8]byte
+	var bs []byte
+	bs = b[:8]
+	tmp32 := t.Replica
+	bs[0] = byte(tmp32)
+	bs[1] = byte(tmp32 >> 8)
+	bs[2] = byte(tmp32 >> 16)
+	bs[3] = byte(tmp32 >> 24)
+	tmp32 = t.CommandId
+	bs[4] = byte(tmp32)
+	bs[5] = byte(tmp32 >> 8)
+	bs[6] = byte(tmp32 >> 16)
+	bs[7] = byte(tmp32 >> 24)
+	wire.Write(bs)
+}
+
+func (t *MCollect) Unmarshal(wire io.Reader) error {
+	var b [8]byte
+	var bs []byte
+	bs = b[:8]
+	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
+		return err
+	}
+	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	t.CommandId = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
 	return nil
 }
 

@@ -23,6 +23,7 @@ type Replica struct {
 	deps   map[int32]yagpaxosproto.DepSet
 
 	committer *committer
+	gc        *gc
 	proposes  map[int32]*genericsmr.Propose
 
 	fastAckQuorumSets      map[int32]*quorumSet
@@ -59,6 +60,7 @@ type CommunicationSupply struct {
 	newLeaderAckChan chan fastrpc.Serializable
 	syncChan         chan fastrpc.Serializable
 	syncAckChan      chan fastrpc.Serializable
+	collectChan      chan fastrpc.Serializable
 
 	fastAckRPC      uint8
 	commitRPC       uint8
@@ -67,6 +69,7 @@ type CommunicationSupply struct {
 	newLeaderAckRPC uint8
 	syncRPC         uint8
 	syncAckRPC      uint8
+	collectRPC      uint8
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
@@ -108,9 +111,45 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 			syncAckChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
+			collectChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
 		},
 	}
 	r.committer = newCommitter(&(r.Mutex))
+	r.gc = newGc(func(cmdId int32) {
+		_, exists := r.phases[cmdId]
+		if exists {
+			delete(r.phases, cmdId)
+		}
+		_, exists = r.cmds[cmdId]
+		if exists {
+			delete(r.cmds, cmdId)
+		}
+		_, exists = r.deps[cmdId]
+		if exists {
+			delete(r.deps, cmdId)
+		}
+		_, exists = r.proposes[cmdId]
+		if exists {
+			delete(r.proposes, cmdId)
+		}
+		_, exists = r.fastAckQuorumSets[cmdId]
+		if exists {
+			delete(r.fastAckQuorumSets, cmdId)
+		}
+		_, exists = r.slowAckQuorumSets[cmdId]
+		if exists {
+			delete(r.slowAckQuorumSets, cmdId)
+		}
+		_, exists = r.newLeaderAckQuorumSets[cmdId]
+		if exists {
+			delete(r.newLeaderAckQuorumSets, cmdId)
+		}
+		_, exists = r.syncAckQuorumSets[cmdId]
+		if exists {
+			delete(r.syncAckQuorumSets, cmdId)
+		}
+	}, &r.Mutex)
 
 	r.cs.fastAckRPC =
 		r.RegisterRPC(new(yagpaxosproto.MFastAck), r.cs.fastAckChan)
@@ -126,6 +165,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		r.RegisterRPC(new(yagpaxosproto.MSync), r.cs.syncChan)
 	r.cs.syncAckRPC =
 		r.RegisterRPC(new(yagpaxosproto.MSyncAck), r.cs.syncAckChan)
+	r.cs.collectRPC =
+		r.RegisterRPC(new(yagpaxosproto.MCollect), r.cs.collectChan)
 
 	go r.run()
 
@@ -169,6 +210,9 @@ func (r *Replica) run() {
 		case m := <-r.cs.syncAckChan:
 			syncAck := m.(*yagpaxosproto.MSyncAck)
 			go r.handleSyncAck(syncAck)
+		case m := <-r.cs.collectChan:
+			collect := m.(*yagpaxosproto.MCollect)
+			go r.handleCollect(collect)
 		}
 	}
 }
@@ -267,7 +311,10 @@ func (r *Replica) handleFastAcks(q *quorum) {
 		return
 	}
 
-	if r.fastAckQuorumSets[leaderFastAck.CommandId].totalSize < slowQuorumSize {
+	_, exists := r.fastAckQuorumSets[leaderFastAck.CommandId]
+	if !exists ||
+		r.fastAckQuorumSets[leaderFastAck.CommandId].totalSize <
+			slowQuorumSize {
 		return
 	}
 
@@ -309,12 +356,24 @@ func (r *Replica) handleFastAcks(q *quorum) {
 	}
 }
 
+func (r *Replica) handleCollect(msg *yagpaxosproto.MCollect) {
+	r.Lock()
+	defer r.Unlock()
+	r.gc.collect(msg.CommandId, msg.Replica, r.N)
+}
+
 func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.Lock()
 	defer r.Unlock()
 
-	if (r.status != LEADER && r.status != FOLLOWER) ||
-		r.phases[msg.CommandId] == DELIVER {
+	if r.status != LEADER && r.status != FOLLOWER {
+		return
+	} else if r.phases[msg.CommandId] == DELIVER {
+		collect := &yagpaxosproto.MCollect{
+			Replica:   msg.Replica,
+			CommandId: msg.CommandId,
+		}
+		go r.handleCollect(collect)
 		return
 	}
 
@@ -353,6 +412,15 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	} else if r.status == FOLLOWER {
 		r.committer.safeDeliver(msg.CommandId, msg.Dep, f)
 	}
+
+	collect := &yagpaxosproto.MCollect{
+		Replica:   r.Id,
+		CommandId: msg.CommandId,
+	}
+	r.sendToAll(collect, r.cs.collectRPC)
+	go r.handleCollect(collect)
+	collect.Replica = msg.Replica
+	go r.handleCollect(collect)
 }
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {

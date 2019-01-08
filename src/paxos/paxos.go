@@ -18,8 +18,6 @@ const CHAN_BUFFER_SIZE = 200000
 const TRUE = uint8(1)
 const FALSE = uint8(0)
 
-const MAX_BATCH = 1
-
 const COMMIT_GRACE_PERIOD = 10 * 1e9 // 10 second(s)
 const SLEEP_TIME_NS = 1e6
 
@@ -48,6 +46,7 @@ type Replica struct {
 	counter               int
 	flush                 bool
 	executedUpTo          int32
+	batchWait             int
 }
 
 type InstanceStatus int
@@ -77,7 +76,7 @@ type LeaderBookkeeping struct {
 	lastTriedBallot int32           // highest ballot tried so far
 }
 
-func NewReplica(id int, peerAddrList []string, Isleader bool, thrifty bool, exec bool, lread bool, dreply bool, durable bool) *Replica {
+func NewReplica(id int, peerAddrList []string, Isleader bool, thrifty bool, exec bool, lread bool, dreply bool, durable bool, batchWait int) *Replica {
 	r := &Replica{genericsmr.NewReplica(id, peerAddrList, thrifty, exec, lread, dreply),
 		make(chan fastrpc.Serializable, genericsmr.CHAN_BUFFER_SIZE),
 		make(chan fastrpc.Serializable, genericsmr.CHAN_BUFFER_SIZE),
@@ -96,7 +95,8 @@ func NewReplica(id int, peerAddrList []string, Isleader bool, thrifty bool, exec
 		false,
 		0,
 		true,
-		-1}
+		-1,
+		batchWait}
 
 	r.Durable = durable
 
@@ -171,16 +171,22 @@ func (r *Replica) replyAccept(replicaId int32, reply *paxosproto.AcceptReply) {
 	r.SendMsg(replicaId, r.acceptReplyRPC, reply)
 }
 
-/* ============= */
+/* Clock goroutine */
 
-var clockChan chan bool
+var fastClockChan chan bool
 
-func (r *Replica) clock() {
+func (r *Replica) fastClock() {
 	for !r.Shutdown {
-		time.Sleep(1000 * 1000 * 5)
-		clockChan <- true
+		time.Sleep(time.Duration(r.batchWait) * time.Millisecond) // ms
+		fastClockChan <- true
 	}
 }
+
+func (r *Replica) BatchingEnabled() bool {
+	return r.batchWait > 0
+}
+
+/* ============= */
 
 /* Main event processing loop */
 
@@ -194,8 +200,13 @@ func (r *Replica) run() {
 		go r.executeCommands()
 	}
 
-	clockChan = make(chan bool, 1)
-	go r.clock()
+	fastClockChan = make(chan bool, 1)
+
+	//Enabled fast clock when batching
+	if r.BatchingEnabled() {
+		go r.fastClock()
+	}
+
 	onOffProposeChan := r.ProposeChan
 
 	go r.WaitForClientConnections()
@@ -203,20 +214,19 @@ func (r *Replica) run() {
 	for !r.Shutdown {
 
 		select {
-
-		case <-clockChan:
-			//activate the new proposals channel
-			onOffProposeChan = r.ProposeChan
-			break
-
 		case propose := <-onOffProposeChan:
 			//got a Propose from a client
-			dlog.Printf("Received proposal with type=%d\n", propose.Command.Op)
 			r.handlePropose(propose)
-			//deactivate the new proposals channel to prioritize the handling of protocol messages
-			if MAX_BATCH > 100 {
+			//deactivate new proposals channel to prioritize the handling of other protocol messages,
+			//and to allow commands to accumulate for batching
+			if r.BatchingEnabled() {
 				onOffProposeChan = nil
 			}
+			break
+
+		case <-fastClockChan:
+			//activate new proposals channel
+			onOffProposeChan = r.ProposeChan
 			break
 
 		case prepareS := <-r.prepareChan:
@@ -386,11 +396,6 @@ func (r *Replica) handlePropose(propose *genericsmr.Propose) {
 	}
 
 	batchSize := len(r.ProposeChan) + 1
-
-	if batchSize > MAX_BATCH {
-		batchSize = MAX_BATCH
-	}
-
 	dlog.Printf("Batched %d\n", batchSize)
 
 	proposals := make([]*genericsmr.Propose, batchSize)
@@ -614,7 +619,7 @@ func (r *Replica) handlePrepareReply(preply *paxosproto.PrepareReply) {
 	}
 
 	if preply.VBallot > lb.ballot {
-		dlog.Printf("Command(s) found \n")
+		dlog.Printf("Prior vote found \n")
 		lb.ballot = preply.VBallot
 		lb.cmds = preply.Command
 	}
@@ -719,9 +724,20 @@ func (r *Replica) handleAcceptReply(areply *paxosproto.AcceptReply) {
 }
 
 func (r *Replica) recover(instance int32) {
+	if r.instanceSpace[instance] == nil {
+		r.instanceSpace[instance] = &Instance{
+			nil,
+			r.defaultBallot[r.Id],
+			r.defaultBallot[r.Id],
+			PREPARING,
+			nil}
+
+	}
+
 	if r.instanceSpace[instance].lb == nil {
 		r.instanceSpace[instance].lb = &LeaderBookkeeping{nil, 0, 0, 0, -1, nil, -1}
 	}
+
 	r.makeBallot(instance)
 	r.bcastPrepare(instance)
 }
@@ -759,8 +775,10 @@ func (r *Replica) executeCommands() {
 				if i == problemInstance {
 					timeout += SLEEP_TIME_NS
 					if timeout >= COMMIT_GRACE_PERIOD {
-						dlog.Printf("Recovering instance %d \n", i)
-						r.instancesToRecover <- problemInstance
+						for k := problemInstance; k <= r.crtInstance; k++ {
+							dlog.Printf("Recovering instance %d \n", k)
+							r.instancesToRecover <- k
+						}
 						problemInstance = 0
 						timeout = 0
 					}

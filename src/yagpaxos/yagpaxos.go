@@ -257,7 +257,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	} else {
 		fastAck.AcceptId = -1
 	}
-	r.sendToAll(fastAck, r.cs.fastAckRPC)
+	go r.sendToAll(fastAck, r.cs.fastAckRPC)
 	go r.handleFastAck(fastAck)
 }
 
@@ -328,9 +328,9 @@ func (r *Replica) handleFastAcks(q *quorum) {
 
 		if r.status == FOLLOWER {
 			r.committer.addTo(leaderFastAck.CommandId, leaderFastAck.AcceptId)
-			r.SendMsg(leaderFastAck.Replica, r.cs.commitRPC, commit)
+			go r.SendMsg(leaderFastAck.Replica, r.cs.commitRPC, commit)
 		} else {
-			r.sendToAll(commit, r.cs.commitRPC)
+			go r.sendToAll(commit, r.cs.commitRPC)
 		}
 		go r.handleCommit(commit)
 	} else {
@@ -349,7 +349,7 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			Dep:       r.deps[leaderFastAck.CommandId],
 		}
 		if r.status == FOLLOWER {
-			r.SendMsg(leaderFastAck.Replica, r.cs.slowAckRPC, slowAck)
+			go r.SendMsg(leaderFastAck.Replica, r.cs.slowAckRPC, slowAck)
 		} else {
 			go r.handleSlowAck(slowAck)
 		}
@@ -417,10 +417,12 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 		Replica:   r.Id,
 		CommandId: msg.CommandId,
 	}
-	r.sendToAll(collect, r.cs.collectRPC)
+	go r.sendToAll(collect, r.cs.collectRPC)
 	go r.handleCollect(collect)
-	collect.Replica = msg.Replica
-	go r.handleCollect(collect)
+	go r.handleCollect(&yagpaxosproto.MCollect{
+		Replica:   msg.Replica,
+		CommandId: msg.CommandId,
+	})
 }
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
@@ -480,7 +482,7 @@ func (r *Replica) handleSlowAcks(q *quorum) {
 		Command:   r.cmds[leaderSlowAck.CommandId],
 		Dep:       r.deps[leaderSlowAck.CommandId],
 	}
-	r.sendToAll(commit, r.cs.commitRPC)
+	go r.sendToAll(commit, r.cs.commitRPC)
 	go r.handleCommit(commit)
 }
 
@@ -507,7 +509,7 @@ func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
 	if l := leader(r.ballot, r.N); l == r.Id {
 		go r.handleNewLeaderAck(newLeaderAck)
 	} else {
-		r.SendMsg(l, r.cs.newLeaderAckRPC, newLeaderAck)
+		go r.SendMsg(l, r.cs.newLeaderAckRPC, newLeaderAck)
 	}
 }
 
@@ -616,7 +618,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		Cmds:    r.cmds,
 		Deps:    r.deps,
 	}
-	r.sendToAll(sync, r.cs.syncRPC)
+	go r.sendToAll(sync, r.cs.syncRPC)
 }
 
 func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
@@ -638,7 +640,7 @@ func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
 		Replica: r.Id,
 		Ballot:  msg.Ballot,
 	}
-	r.SendMsg(leader(msg.Ballot, r.N), r.cs.syncAckRPC, syncAck)
+	go r.SendMsg(leader(msg.Ballot, r.N), r.cs.syncAckRPC, syncAck)
 }
 
 func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
@@ -700,7 +702,7 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 			Command:   r.cmds[cmdId],
 			Dep:       r.deps[cmdId],
 		}
-		r.sendToAll(commit, r.cs.commitRPC)
+		go r.sendToAll(commit, r.cs.commitRPC)
 		go r.handleCommit(commit)
 	}
 }
@@ -726,7 +728,7 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 		Replica: r.Id,
 		Ballot:  newBallot,
 	}
-	r.sendToAll(newLeader, r.cs.newLeaderRPC)
+	go r.sendToAll(newLeader, r.cs.newLeaderRPC)
 	go r.handleNewLeader(newLeader)
 
 	return nil

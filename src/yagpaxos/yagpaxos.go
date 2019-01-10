@@ -611,6 +611,8 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		}
 	}
 
+	r.cballot = r.ballot
+
 	sync := &yagpaxosproto.MSync{
 		Replica: r.Id,
 		Ballot:  r.ballot,
@@ -689,7 +691,6 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 	}
 
 	r.status = LEADER
-	r.cballot = r.ballot
 	for cmdId, p := range r.phases {
 		// TODO: send commit even if p == DELIVER
 		if p == COMMIT || p == DELIVER {

@@ -10,6 +10,7 @@ import (
 type committer struct {
 	next      int
 	first     int
+	last      int
 	delivered int
 	cmdIds    map[int]int32
 	instances map[int32]int
@@ -19,6 +20,7 @@ func newCommitter(m *sync.Mutex) *committer {
 	c := &committer{
 		next:      0,
 		first:     -1,
+		last:      -1,
 		delivered: -1,
 		cmdIds:    make(map[int]int32, 10), // FIXME
 		instances: make(map[int32]int, 10), // FIXME
@@ -49,12 +51,16 @@ func (c *committer) getInstance(cmdId int32) int {
 func (c *committer) add(cmdId int32) {
 	c.cmdIds[c.next] = cmdId
 	c.instances[cmdId] = c.next
+	c.last = c.next
 	c.next++
 }
 
 func (c *committer) addTo(cmdId int32, instance int) {
 	c.cmdIds[instance] = cmdId
 	c.instances[cmdId] = instance
+	if instance > c.last {
+		c.last = instance
+	}
 }
 
 func (c *committer) deliver(cmdId int32, f func(int32)) {
@@ -84,4 +90,17 @@ func (c *committer) safeDeliver(cmdId int32, cmdDeps yagpaxosproto.DepSet,
 	}
 
 	return nil
+}
+
+func (c *committer) wasDelivered(cmdId int32) bool {
+	i, exists := c.instances[cmdId]
+	return exists && i <= c.delivered
+}
+
+func (c *committer) undeliveredIter(f func(int32)) {
+	i := c.delivered + 1
+	j := c.last
+	for ; i <= j; i++ {
+		f(c.cmdIds[i])
+	}
 }

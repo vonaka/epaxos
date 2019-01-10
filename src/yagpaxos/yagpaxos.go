@@ -236,12 +236,20 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		r.phases[msg.CommandId] = FAST_ACCEPT
 		r.cmds[msg.CommandId] = msg.Command
 		r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
-		for cid, p := range r.phases {
+
+		r.committer.undeliveredIter(func (cid int32) {
+			if cid != msg.CommandId && r.phases[cid] != START &&
+				inConflict(r.cmds[cid], msg.Command) {
+				r.deps[msg.CommandId].Add(cid)
+			}
+		})
+
+		/*for cid, p := range r.phases {
 			if cid != msg.CommandId && p != START &&
 				inConflict(r.cmds[cid], msg.Command) {
 				r.deps[msg.CommandId].Add(cid)
 			}
-		}
+		}*/
 	}
 
 	fastAck := &yagpaxosproto.MFastAck{
@@ -288,7 +296,11 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		r.fastAckQuorumSets[msg.CommandId] = qs
 	}
 
-	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
+	fromLeader := msg.Replica == leader(r.ballot, r.N)
+	if fromLeader && r.status == FOLLOWER {
+		r.committer.addTo(msg.CommandId, msg.AcceptId)
+	}
+	qs.add(msg, fromLeader)
 }
 
 func (r *Replica) handleFastAcks(q *quorum) {
@@ -327,7 +339,7 @@ func (r *Replica) handleFastAcks(q *quorum) {
 		}
 
 		if r.status == FOLLOWER {
-			r.committer.addTo(leaderFastAck.CommandId, leaderFastAck.AcceptId)
+			//r.committer.addTo(leaderFastAck.CommandId, leaderFastAck.AcceptId)
 			go r.SendMsg(leaderFastAck.Replica, r.cs.commitRPC, commit)
 		} else {
 			go r.sendToAll(commit, r.cs.commitRPC)
@@ -338,7 +350,7 @@ func (r *Replica) handleFastAcks(q *quorum) {
 		if r.status == FOLLOWER {
 			r.cmds[leaderFastAck.CommandId] = leaderFastAck.Command
 			r.deps[leaderFastAck.CommandId] = leaderFastAck.Dep
-			r.committer.addTo(leaderFastAck.CommandId, leaderFastAck.AcceptId)
+			//r.committer.addTo(leaderFastAck.CommandId, leaderFastAck.AcceptId)
 		}
 
 		slowAck := &yagpaxosproto.MSlowAck{

@@ -237,19 +237,19 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		r.cmds[msg.CommandId] = msg.Command
 		r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
 
-		r.committer.undeliveredIter(func (cid int32) {
+		/*r.committer.undeliveredIter(func (cid int32) {
 			if cid != msg.CommandId && r.phases[cid] != START &&
 				inConflict(r.cmds[cid], msg.Command) {
 				r.deps[msg.CommandId].Add(cid)
 			}
-		})
+		})*/
 
-		/*for cid, p := range r.phases {
+		for cid, p := range r.phases {
 			if cid != msg.CommandId && p != START &&
 				inConflict(r.cmds[cid], msg.Command) {
 				r.deps[msg.CommandId].Add(cid)
 			}
-		}*/
+		}
 	}
 
 	fastAck := &yagpaxosproto.MFastAck{
@@ -765,4 +765,33 @@ func leader(ballot int32, repNum int) int32 {
 
 func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
+}
+
+func (r *Replica) equalDeps(d1 yagpaxosproto.DepSet,
+	d2 yagpaxosproto.DepSet) bool {
+	contains := func(cmdId int32, d yagpaxosproto.DepSet) bool {
+		for i := 0; i < d.Size; i++ {
+			if d.Set[i] == cmdId {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i := 0; i < d2.Size; i++ {
+		cmdId := d2.Set[i]
+		if !contains(cmdId, d1) && !r.committer.wasDelivered(cmdId) {
+			return false
+		}
+	}
+
+	for i := 0; i < d1.Size; i++ {
+		cmdId := d1.Set[i]
+		if !contains(cmdId, d2) &&
+			r.phases[cmdId] != COMMIT && r.phases[cmdId] != DELIVER {
+			return false
+		}
+	}
+
+	return true
 }

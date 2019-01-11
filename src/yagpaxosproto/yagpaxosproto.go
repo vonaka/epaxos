@@ -162,22 +162,22 @@ func (d DepSet) Add(cmdId int32) {
 	}
 }
 
+func (d DepSet) Contains(cmdId int32) bool {
+	for i := 0; i < d.Size; i++ {
+		if d.Set[i] == cmdId {
+			return true
+		}
+	}
+	return false
+}
+
 func (d1 DepSet) Equals(d2 DepSet) bool {
 	if d1.Size != d2.Size {
 		return false
 	}
 
-	contains := func(cmdId int32, d DepSet) bool {
-		for i := 0; i < d.Size; i++ {
-			if d.Set[i] == cmdId {
-				return true
-			}
-		}
-		return false
-	}
-
 	for i := 0; i < d1.Size; i++ {
-		if !contains(d2.Set[i], d2) {
+		if !d2.Contains(d1.Set[i]) {
 			return false
 		}
 	}

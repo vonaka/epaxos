@@ -2,7 +2,7 @@ package yagpaxos
 
 import "sync"
 
-const WAIT_FOR = 350
+const WAIT_FOR = 800
 
 type gc struct {
 	sync.Mutex

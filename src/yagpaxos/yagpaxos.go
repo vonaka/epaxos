@@ -237,19 +237,19 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		r.cmds[msg.CommandId] = msg.Command
 		r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
 
-		/*r.committer.undeliveredIter(func (cid int32) {
+		r.committer.undeliveredIter(func(cid int32) {
 			if cid != msg.CommandId && r.phases[cid] != START &&
 				inConflict(r.cmds[cid], msg.Command) {
 				r.deps[msg.CommandId].Add(cid)
 			}
-		})*/
+		})
 
-		for cid, p := range r.phases {
+		/*for cid, p := range r.phases {
 			if cid != msg.CommandId && p != START &&
 				inConflict(r.cmds[cid], msg.Command) {
 				r.deps[msg.CommandId].Add(cid)
 			}
-		}
+		}*/
 	}
 
 	fastAck := &yagpaxosproto.MFastAck{
@@ -285,7 +285,8 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		related := func(e1 interface{}, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
-			return fastAck1.Dep.Equals(fastAck2.Dep)
+			//return fastAck1.Dep.Equals(fastAck2.Dep)
+			return r.equalDeps(fastAck1.Dep, fastAck2.Dep)
 		}
 		wakeup := func() bool {
 			_, exists := r.proposes[msg.CommandId]
@@ -381,11 +382,10 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	if r.status != LEADER && r.status != FOLLOWER {
 		return
 	} else if r.phases[msg.CommandId] == DELIVER {
-		collect := &yagpaxosproto.MCollect{
+		go r.handleCollect(&yagpaxosproto.MCollect{
 			Replica:   msg.Replica,
 			CommandId: msg.CommandId,
-		}
-		go r.handleCollect(collect)
+		})
 		return
 	}
 
@@ -452,7 +452,8 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 		related := func(e1 interface{}, e2 interface{}) bool {
 			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
 			slowAck2 := e2.(*yagpaxosproto.MSlowAck)
-			return slowAck1.Dep.Equals(slowAck2.Dep)
+			//return slowAck1.Dep.Equals(slowAck2.Dep)
+			return r.equalDeps(slowAck1.Dep, slowAck2.Dep)
 		}
 		wakeup := func() bool {
 			return true
@@ -585,7 +586,28 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 			d := newLeaderAck0.Deps[cmdId]
 			for _, e := range q.elements {
 				newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
-				if d.Equals(newLeaderAck.Deps[cmdId]) {
+				/*if d.Equals(newLeaderAck.Deps[cmdId]) {
+					n++
+				}*/
+				d2 := newLeaderAck.Deps[cmdId]
+				inc := true
+				for i := 0; i < d.Size; i++ {
+					if !d2.Contains(d.Set[i]) &&
+						newLeaderAck.Phases[cmdId] != DELIVER &&
+						newLeaderAck.Phases[cmdId] != COMMIT {
+						inc = false
+						break
+					}
+				}
+				for i := 0; inc && i < d2.Size; i++ {
+					if !d.Contains(d2.Set[i]) &&
+						newLeaderAck0.Phases[cmdId] != DELIVER &&
+						newLeaderAck0.Phases[cmdId] != COMMIT {
+						inc = false
+						break
+					}
+				}
+				if inc {
 					n++
 				}
 				if n >= r.N/4 {
@@ -769,25 +791,17 @@ func inConflict(c1, c2 state.Command) bool {
 
 func (r *Replica) equalDeps(d1 yagpaxosproto.DepSet,
 	d2 yagpaxosproto.DepSet) bool {
-	contains := func(cmdId int32, d yagpaxosproto.DepSet) bool {
-		for i := 0; i < d.Size; i++ {
-			if d.Set[i] == cmdId {
-				return true
-			}
-		}
-		return false
-	}
-
 	for i := 0; i < d2.Size; i++ {
 		cmdId := d2.Set[i]
-		if !contains(cmdId, d1) && !r.committer.wasDelivered(cmdId) {
+		if !d1.Contains(cmdId) &&
+			r.phases[cmdId] != COMMIT && r.phases[cmdId] != DELIVER {
 			return false
 		}
 	}
 
 	for i := 0; i < d1.Size; i++ {
 		cmdId := d1.Set[i]
-		if !contains(cmdId, d2) &&
+		if !d2.Contains(cmdId) &&
 			r.phases[cmdId] != COMMIT && r.phases[cmdId] != DELIVER {
 			return false
 		}

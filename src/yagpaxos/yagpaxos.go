@@ -358,8 +358,6 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			Replica:   r.Id,
 			Ballot:    leaderFastAck.Ballot,
 			CommandId: leaderFastAck.CommandId,
-			Command:   r.cmds[leaderFastAck.CommandId],
-			Dep:       r.deps[leaderFastAck.CommandId],
 		}
 		if r.status == FOLLOWER {
 			go r.SendMsg(leaderFastAck.Replica, r.cs.slowAckRPC, slowAck)
@@ -450,10 +448,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 		slowQuorumSize := r.N/2 + 1
 		waitFor := time.Duration(r.N+1) * r.cs.maxLatency // FIXME
 		related := func(e1 interface{}, e2 interface{}) bool {
-			slowAck1 := e1.(*yagpaxosproto.MSlowAck)
-			slowAck2 := e2.(*yagpaxosproto.MSlowAck)
-			//return slowAck1.Dep.Equals(slowAck2.Dep)
-			return r.equalDeps(slowAck1.Dep, slowAck2.Dep)
+			return true
 		}
 		wakeup := func() bool {
 			return true

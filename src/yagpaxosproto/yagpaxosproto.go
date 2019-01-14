@@ -31,8 +31,6 @@ type MSlowAck struct {
 	Replica   int32
 	Ballot    int32
 	CommandId int32
-	Command   state.Command
-	Dep       DepSet
 }
 
 type MNewLeader struct {
@@ -360,7 +358,7 @@ func (t *MCommit) Unmarshal(wire io.Reader) error {
 }
 
 func (t *MSlowAck) BinarySize() (nbytes int, sizeKnown bool) {
-	return 0, false
+	return 12, true
 }
 
 type MSlowAckCache struct {
@@ -412,8 +410,6 @@ func (t *MSlowAck) Marshal(wire io.Writer) {
 	bs[10] = byte(tmp32 >> 16)
 	bs[11] = byte(tmp32 >> 24)
 	wire.Write(bs)
-	t.Command.Marshal(wire)
-	t.Dep.Marshal(wire)
 }
 
 func (t *MSlowAck) Unmarshal(wire io.Reader) error {
@@ -426,8 +422,6 @@ func (t *MSlowAck) Unmarshal(wire io.Reader) error {
 	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
 	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
 	t.CommandId = int32((uint32(bs[8]) | (uint32(bs[9]) << 8) | (uint32(bs[10]) << 16) | (uint32(bs[11]) << 24)))
-	t.Command.Unmarshal(wire)
-	t.Dep.Unmarshal(wire)
 	return nil
 }
 

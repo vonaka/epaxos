@@ -11,7 +11,7 @@ type gc struct {
 	wakeup chan struct{}
 }
 
-func newGc(clean func(int32), mutex *sync.Mutex) *gc {
+func newGc(clean func(int32), mutex *sync.Mutex, shutdown *bool) *gc {
 	g := gc{
 		cmds:   make(map[int32]map[int32]struct{}),
 		trash:  make(map[int32]struct{}, WAIT_FOR),
@@ -19,7 +19,7 @@ func newGc(clean func(int32), mutex *sync.Mutex) *gc {
 	}
 
 	go func(g *gc) {
-		for {
+		for !*shutdown {
 			<-g.wakeup
 			g.Lock()
 			mutex.Lock()

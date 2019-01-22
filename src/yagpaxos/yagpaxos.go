@@ -120,7 +120,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 		},
 	}
-	r.committer = newCommitter(&(r.Mutex))
+	r.committer = newCommitter(&(r.Mutex), &(r.Shutdown))
 	r.gc = newGc(func(cmdId int32) {
 		_, exists := r.phases[cmdId]
 		if exists {
@@ -154,7 +154,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		if exists {
 			delete(r.syncAckQuorumSets, cmdId)
 		}
-	}, &r.Mutex)
+	}, &r.Mutex, &r.Shutdown)
 
 	r.cs.fastAckRPC =
 		r.RegisterRPC(new(yagpaxosproto.MFastAck), r.cs.fastAckChan)

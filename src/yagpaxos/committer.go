@@ -16,7 +16,7 @@ type committer struct {
 	instances map[int32]int
 }
 
-func newCommitter(m *sync.Mutex) *committer {
+func newCommitter(m *sync.Mutex, shutdown *bool) *committer {
 	c := &committer{
 		next:      0,
 		first:     -1,
@@ -27,7 +27,7 @@ func newCommitter(m *sync.Mutex) *committer {
 	}
 
 	go func() {
-		for {
+		for !*shutdown {
 			time.Sleep(8 * time.Second) // FIXME
 			m.Lock()
 			for i := c.first + 1; i <= c.delivered; i++ {

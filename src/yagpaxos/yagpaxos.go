@@ -26,6 +26,8 @@ type Replica struct {
 	gc        *gc
 	proposes  map[int32]*genericsmr.Propose
 
+	ignoreCommitted bool
+
 	fastAckQuorumSets      map[int32]*quorumSet
 	slowAckQuorumSets      map[int32]*quorumSet
 	newLeaderAckQuorumSets map[int32]*quorumSet
@@ -73,7 +75,8 @@ type CommunicationSupply struct {
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty bool, exec bool, lread bool, dreply bool) *Replica {
+	thrifty bool, exec bool, lread bool,
+	dreply bool, ignoreCommitted bool) *Replica {
 
 	r := Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
@@ -88,6 +91,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		deps:   make(map[int32]yagpaxosproto.DepSet),
 
 		proposes: make(map[int32]*genericsmr.Propose),
+
+		ignoreCommitted: ignoreCommitted,
 
 		fastAckQuorumSets:      make(map[int32]*quorumSet),
 		slowAckQuorumSets:      make(map[int32]*quorumSet),
@@ -237,21 +242,23 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		r.cmds[msg.CommandId] = msg.Command
 		r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
 
-		r.committer.undeliveredIter(func(cid int32) {
-			if cid != msg.CommandId &&
-				r.phases[cid] != START &&
-				r.phases[cid] != COMMIT &&
-				inConflict(r.cmds[cid], msg.Command) {
-				r.deps[msg.CommandId].Add(cid)
+		if r.ignoreCommitted {
+			r.committer.undeliveredIter(func(cid int32) {
+				if cid != msg.CommandId &&
+					r.phases[cid] != START &&
+					r.phases[cid] != COMMIT &&
+					inConflict(r.cmds[cid], msg.Command) {
+					r.deps[msg.CommandId].Add(cid)
+				}
+			})
+		} else {
+			for cid, p := range r.phases {
+				if cid != msg.CommandId && p != START &&
+					inConflict(r.cmds[cid], msg.Command) {
+					r.deps[msg.CommandId].Add(cid)
+				}
 			}
-		})
-
-		/*for cid, p := range r.phases {
-			if cid != msg.CommandId && p != START &&
-				inConflict(r.cmds[cid], msg.Command) {
-				r.deps[msg.CommandId].Add(cid)
-			}
-		}*/
+		}
 	}
 
 	fastAck := &yagpaxosproto.MFastAck{

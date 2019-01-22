@@ -183,6 +183,24 @@ func (d1 DepSet) Equals(d2 DepSet) bool {
 	return true
 }
 
+func (d1 DepSet) SmartEquals(d2 DepSet, ignore func(int32, bool) bool) bool {
+	for i := 0; i < d2.Size; i++ {
+		cmdId := d2.Set[i]
+		if !d1.Contains(cmdId) && !ignore(cmdId, false) {
+			return false
+		}
+	}
+
+	for i := 0; i < d1.Size; i++ {
+		cmdId := d1.Set[i]
+		if !d2.Contains(cmdId) && !ignore(cmdId, true) {
+			return false
+		}
+	}
+
+	return true
+}
+
 func (d DepSet) Iter(f func(cmdId int32) bool) bool {
 	for i := 0; i < d.Size; i++ {
 		if f(d.Set[i]) {

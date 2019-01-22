@@ -238,7 +238,9 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
 
 		r.committer.undeliveredIter(func(cid int32) {
-			if cid != msg.CommandId && r.phases[cid] != START &&
+			if cid != msg.CommandId &&
+				r.phases[cid] != START &&
+				r.phases[cid] != COMMIT &&
 				inConflict(r.cmds[cid], msg.Command) {
 				r.deps[msg.CommandId].Add(cid)
 			}
@@ -285,8 +287,11 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		related := func(e1 interface{}, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
-			//return fastAck1.Dep.Equals(fastAck2.Dep)
-			return r.equalDeps(fastAck1.Dep, fastAck2.Dep)
+			return fastAck1.Dep.SmartEquals(fastAck2.Dep,
+				func(cmdId int32, _ bool) bool {
+					p, exists := r.phases[cmdId]
+					return exists && (p == COMMIT || p == DELIVER)
+				})
 		}
 		wakeup := func() bool {
 			_, exists := r.proposes[msg.CommandId]
@@ -340,7 +345,6 @@ func (r *Replica) handleFastAcks(q *quorum) {
 		}
 
 		if r.status == FOLLOWER {
-			//r.committer.addTo(leaderFastAck.CommandId, leaderFastAck.AcceptId)
 			go r.SendMsg(leaderFastAck.Replica, r.cs.commitRPC, commit)
 		} else {
 			go r.sendToAll(commit, r.cs.commitRPC)
@@ -351,7 +355,6 @@ func (r *Replica) handleFastAcks(q *quorum) {
 		if r.status == FOLLOWER {
 			r.cmds[leaderFastAck.CommandId] = leaderFastAck.Command
 			r.deps[leaderFastAck.CommandId] = leaderFastAck.Dep
-			//r.committer.addTo(leaderFastAck.CommandId, leaderFastAck.AcceptId)
 		}
 
 		slowAck := &yagpaxosproto.MSlowAck{
@@ -566,6 +569,8 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		return
 	}
 
+	// TODO: reset local state
+
 	maxCballot := int32(0)
 	for _, e := range q.elements {
 		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
@@ -576,36 +581,30 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 
 	moreThanFourth := func(cmdId int32) *yagpaxosproto.MNewLeaderAck {
 		n := 1
-		for _, e0 := range q.elements {
+		for id0, e0 := range q.elements {
 			newLeaderAck0 := e0.(*yagpaxosproto.MNewLeaderAck)
 			d := newLeaderAck0.Deps[cmdId]
-			for _, e := range q.elements {
+			for id, e := range q.elements {
+				if id == id0 {
+					continue
+				}
+
 				newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
-				/*if d.Equals(newLeaderAck.Deps[cmdId]) {
-					n++
-				}*/
 				d2 := newLeaderAck.Deps[cmdId]
-				inc := true
-				for i := 0; i < d.Size; i++ {
-					if !d2.Contains(d.Set[i]) &&
-						newLeaderAck.Phases[cmdId] != DELIVER &&
-						newLeaderAck.Phases[cmdId] != COMMIT {
-						inc = false
-						break
+
+				if d.SmartEquals(d2, func(cmdId int32, dContains bool) bool {
+					if dContains {
+						p, exists := newLeaderAck0.Phases[cmdId]
+						return exists && (p == COMMIT || p == DELIVER)
+					} else {
+						p, exists := newLeaderAck.Phases[cmdId]
+						return exists && (p == COMMIT || p == DELIVER)
 					}
-				}
-				for i := 0; inc && i < d2.Size; i++ {
-					if !d.Contains(d2.Set[i]) &&
-						newLeaderAck0.Phases[cmdId] != DELIVER &&
-						newLeaderAck0.Phases[cmdId] != COMMIT {
-						inc = false
-						break
-					}
-				}
-				if inc {
+				}) {
 					n++
 				}
-				if n >= r.N/4 {
+
+				if n >= r.N/4 { // maybe n > r.N.4 ?
 					return newLeaderAck0
 				}
 			}
@@ -638,6 +637,18 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 				}
 			}
 		}
+	}
+
+	for _, dep := range r.deps {
+		dep.Iter(func(cmdId int32) bool {
+			p, exists := r.phases[cmdId]
+			if !exists || p == START {
+				r.phases[cmdId] = SLOW_ACCEPT
+				r.cmds[cmdId] = state.NOOP()[0]
+				// TODO: set r.deps[cmdId] to NIL
+			}
+			return false
+		})
 	}
 
 	r.cballot = r.ballot
@@ -782,25 +793,4 @@ func leader(ballot int32, repNum int) int32 {
 
 func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
-}
-
-func (r *Replica) equalDeps(d1 yagpaxosproto.DepSet,
-	d2 yagpaxosproto.DepSet) bool {
-	for i := 0; i < d2.Size; i++ {
-		cmdId := d2.Set[i]
-		if !d1.Contains(cmdId) &&
-			r.phases[cmdId] != COMMIT && r.phases[cmdId] != DELIVER {
-			return false
-		}
-	}
-
-	for i := 0; i < d1.Size; i++ {
-		cmdId := d1.Set[i]
-		if !d2.Contains(cmdId) &&
-			r.phases[cmdId] != COMMIT && r.phases[cmdId] != DELIVER {
-			return false
-		}
-	}
-
-	return true
 }

@@ -576,8 +576,6 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		return
 	}
 
-	// TODO: reset local state
-
 	maxCballot := int32(0)
 	for _, e := range q.elements {
 		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
@@ -619,28 +617,33 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		return nil
 	}
 
-	cmdIds := make(map[int32]struct{})
+	r.phases = make(map[int32]int)
+	r.cmds = make(map[int32]state.Command)
+	r.deps = make(map[int32]yagpaxosproto.DepSet)
+	// TODO: reset committer, gc, and propose ?
+
+	acceptedCmds := make(map[int32]struct{})
 
 	for _, e := range q.elements {
 		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
 		for cmdId, p := range newLeaderAck.Phases {
-			_, exists := cmdIds[cmdId]
-			if !exists {
-				cmdIds[cmdId] = struct{}{}
-				r.deps[cmdId] = yagpaxosproto.NilDepSet()
+			_, exists := acceptedCmds[cmdId]
+			if exists {
+				continue
 			}
-			if r.deps[cmdId].IsNil() &&
-				(p == COMMIT ||
-					(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot)) {
+			if p == COMMIT ||
+				(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot) {
 				r.phases[cmdId] = newLeaderAck.Phases[cmdId]
 				r.cmds[cmdId] = newLeaderAck.Cmds[cmdId]
 				r.deps[cmdId] = newLeaderAck.Deps[cmdId]
-			} else if r.deps[cmdId].IsNil() {
+				acceptedCmds[cmdId] = struct{}{}
+			} else {
 				someMsg := moreThanFourth(cmdId)
 				if someMsg != nil {
 					r.phases[cmdId] = SLOW_ACCEPT
 					r.cmds[cmdId] = someMsg.Cmds[cmdId]
 					r.deps[cmdId] = someMsg.Deps[cmdId]
+					acceptedCmds[cmdId] = struct{}{}
 				}
 			}
 		}

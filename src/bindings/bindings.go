@@ -107,7 +107,9 @@ func (b *Parameters) Connect() error {
 	var toConnect []int
 	if b.isFast {
 		for i := 0; i < b.n; i++ {
-			toConnect = append(toConnect, i)
+			if replyRL.AliveList[i] {
+				toConnect = append(toConnect, i)
+			}
 		}
 	} else {
 		toConnect = append(toConnect, b.closestReplica)
@@ -338,9 +340,11 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 				log.Println("Sent to everyone")
 			}
 			for rep := 0; rep < b.n; rep++ {
-				b.writers[rep].WriteByte(genericsmrproto.PROPOSE)
-				args.Marshal(b.writers[rep])
-				b.writers[rep].Flush()
+				if b.writers[rep] != nil {
+					b.writers[rep].WriteByte(genericsmrproto.PROPOSE)
+					args.Marshal(b.writers[rep])
+					b.writers[rep].Flush()
+				}
 			}
 		}
 

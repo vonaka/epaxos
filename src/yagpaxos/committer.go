@@ -217,13 +217,13 @@ func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
 				beforeBlockLeader = append(beforeBlockLeader, depCmdId)
 				b.cmdDesc[cmdId] = &cmdPos{
 					block: block,
-					id: newDepId,
+					id:    newDepId,
 				}
 				newDepId++
 				afterBlockLeader1 := []int32{}
 				afterBlockLeader2 := []int32{}
 				copy(afterBlockLeader1, afterBlockLeader[:depId])
-				copy(afterBlockLeader2, afterBlockLeader[(depId + 1):])
+				copy(afterBlockLeader2, afterBlockLeader[(depId+1):])
 				afterBlockLeader =
 					append(afterBlockLeader1, afterBlockLeader2...)
 			}
@@ -231,7 +231,7 @@ func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
 			beforeBlockLeader = append(beforeBlockLeader, depCmdId)
 			b.cmdDesc[cmdId] = &cmdPos{
 				block: block,
-				id: newDepId,
+				id:    newDepId,
 			}
 			newDepId++
 		}
@@ -245,7 +245,7 @@ func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
 }
 
 func (builder *committerBuilder) buildCommitterFrom(oldCommitter *committer,
-	m *sync.Mutex, shutdown *bool) *committer{
+	m *sync.Mutex, shutdown *bool) *committer {
 	block := builder.headBlock
 	committer := newCommitter(m, shutdown)
 	for block != nil {

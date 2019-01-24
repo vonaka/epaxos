@@ -106,81 +106,156 @@ func (c *committer) undeliveredIter(f func(int32)) {
 }
 
 type buildingBlock struct {
-	id          int
-	blockLeader int32
-	cmds        []int32
-	nextBlock   *buildingBlock
+	cmds          []int32
+	nextBlock     *buildingBlock
+	previousBlock *buildingBlock
+}
+
+type cmdPos struct {
+	block *buildingBlock
+	id    int
 }
 
 type committerBuilder struct {
 	headBlock *buildingBlock
-	tailBlock *buildingBlock
-	blocks    map[int32]*buildingBlock
-	maxId     int
+	cmdDesc   map[int32]*cmdPos
 }
 
-func newBuilderFromCommitter(c *committer) *committerBuilder {
-	block := &buildingBlock{
-		id:          0,
-		blockLeader: c.cmdIds[c.last],
-		cmds:        make([]int32, c.last-c.first),
-		nextBlock:   nil,
+func newBuilder() *committerBuilder {
+	return &committerBuilder{
+		headBlock: nil,
+		cmdDesc:   make(map[int32]*cmdPos),
 	}
-	builder := &committerBuilder{
-		headBlock: block,
-		tailBlock: block,
-		blocks:    make(map[int32]*buildingBlock),
-		maxId:     0,
+}
+
+func (b1 *buildingBlock) putInFrontOf(b2 *buildingBlock) {
+	if b2.nextBlock != nil {
+		b2.nextBlock.previousBlock = b2.previousBlock
+	}
+	if b2.previousBlock != nil {
+		b2.previousBlock.nextBlock = b2.nextBlock
 	}
 
-	for i := c.first + 1; i <= c.last; i++ {
-		block.cmds[i] = c.cmdIds[i]
-		builder.blocks[c.cmdIds[i]] = block
+	b2.nextBlock = b1.nextBlock
+	if b1.nextBlock != nil {
+		b1.nextBlock.previousBlock = b2
 	}
 
-	return builder
+	b2.previousBlock = b1
+	b1.nextBlock = b2
+}
+
+func (builder *committerBuilder) merge(b1 *buildingBlock, b2 *buildingBlock) {
+	b1.putInFrontOf(b2)
+
+	b1Len := len(b1.cmds)
+	for i, id := range b2.cmds {
+		b1.cmds = append(b1.cmds, id)
+		builder.cmdDesc[id].block = b1
+		builder.cmdDesc[id].id = i + b1Len
+	}
+	b1.nextBlock = b2.nextBlock
+	if b1.nextBlock != nil {
+		b1.nextBlock.previousBlock = b1
+	}
+
+	if builder.headBlock == b2 {
+		builder.headBlock = b1
+	}
 }
 
 func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
-	block, exists := b.blocks[cmdId]
+	var block *buildingBlock
+	id := 0
+
+	cmdInfo, exists := b.cmdDesc[cmdId]
 	if !exists {
 		block = &buildingBlock{
-			id:          b.maxId + 1,
-			blockLeader: cmdId,
-			cmds:        []int32{},
-			nextBlock:   nil,
+			cmds:          []int32{cmdId},
+			nextBlock:     b.headBlock,
+			previousBlock: nil,
 		}
-		b.maxId++
-		b.tailBlock.nextBlock = block
-		b.tailBlock = block
-		mergeWith := block
-		dep.Iter(func(cmdId int32) bool {
-			depBlock, exists := b.blocks[cmdId]
-			if exists && depBlock.id < mergeWith.id {
-				mergeWith = depBlock
-			} else if !exists {
-				block.cmds = append(block.cmds, cmdId)
-				b.blocks[cmdId] = block
-			}
-			return false
-		})
-		block.cmds = append(block.cmds, cmdId)
-		b.blocks[cmdId] = block
-		nextBlock := mergeWith.nextBlock
-		for nextBlock != nil {
-			mergeWith.blockLeader = nextBlock.blockLeader
-			for _, id := range nextBlock.cmds {
-				if id != -1 {
-					mergeWith.cmds = append(mergeWith.cmds, id)
-					b.blocks[id] = mergeWith
-				}
-			}
-			nextBlock = nextBlock.nextBlock
+		if b.headBlock != nil {
+			b.headBlock.previousBlock = block
 		}
-		mergeWith.nextBlock = nil
-		b.maxId = mergeWith.id
-		b.tailBlock = mergeWith
+		b.headBlock = block
+		b.cmdDesc[cmdId] = &cmdPos{
+			block: block,
+			id:    0,
+		}
 	} else {
-		// split
+		block = cmdInfo.block
+		id = cmdInfo.id
 	}
+
+	beforeBlockLeader := []int32{}
+	afterBlockLeader := []int32{}
+	copy(beforeBlockLeader, block.cmds[:id])
+	copy(afterBlockLeader, block.cmds[id:])
+	newDepId := len(beforeBlockLeader)
+	dep.Iter(func(depCmdId int32) bool {
+		depCmdInfo, exists := b.cmdDesc[depCmdId]
+
+		if exists {
+			depBlock := depCmdInfo.block
+			depId := depCmdInfo.id
+
+			if depBlock != block {
+				block.cmds = append(beforeBlockLeader, afterBlockLeader...)
+				for i := range afterBlockLeader {
+					b.cmdDesc[afterBlockLeader[i]].id = i + newDepId
+				}
+				b.merge(depBlock, block)
+				block = depBlock
+				id += newDepId
+				beforeBlockLeader = []int32{}
+				afterBlockLeader = []int32{}
+				copy(beforeBlockLeader, block.cmds[:id])
+				copy(afterBlockLeader, block.cmds[id:])
+				newDepId = len(beforeBlockLeader)
+			} else if depId > id {
+				beforeBlockLeader = append(beforeBlockLeader, depCmdId)
+				b.cmdDesc[cmdId] = &cmdPos{
+					block: block,
+					id: newDepId,
+				}
+				newDepId++
+				afterBlockLeader1 := []int32{}
+				afterBlockLeader2 := []int32{}
+				copy(afterBlockLeader1, afterBlockLeader[:depId])
+				copy(afterBlockLeader2, afterBlockLeader[(depId + 1):])
+				afterBlockLeader =
+					append(afterBlockLeader1, afterBlockLeader2...)
+			}
+		} else {
+			beforeBlockLeader = append(beforeBlockLeader, depCmdId)
+			b.cmdDesc[cmdId] = &cmdPos{
+				block: block,
+				id: newDepId,
+			}
+			newDepId++
+		}
+		return false
+	})
+
+	block.cmds = append(beforeBlockLeader, afterBlockLeader...)
+	for i := range afterBlockLeader {
+		b.cmdDesc[afterBlockLeader[i]].id = i + newDepId
+	}
+}
+
+func (builder *committerBuilder) buildCommitterFrom(oldCommitter *committer,
+	m *sync.Mutex, shutdown *bool) *committer{
+	block := builder.headBlock
+	committer := newCommitter(m, shutdown)
+	for block != nil {
+		for i := range block.cmds {
+			instance, exists := oldCommitter.instances[block.cmds[i]]
+			if exists && instance <= oldCommitter.delivered {
+				continue
+			}
+			committer.add(block.cmds[i])
+		}
+	}
+	return committer
 }

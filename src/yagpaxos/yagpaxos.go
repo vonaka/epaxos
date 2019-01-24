@@ -623,6 +623,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	// TODO: reset committer, gc, and propose ?
 
 	acceptedCmds := make(map[int32]struct{})
+	builder := newBuilder()
 
 	for _, e := range q.elements {
 		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
@@ -637,6 +638,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 				r.cmds[cmdId] = newLeaderAck.Cmds[cmdId]
 				r.deps[cmdId] = newLeaderAck.Deps[cmdId]
 				acceptedCmds[cmdId] = struct{}{}
+				builder.adjust(cmdId, r.deps[cmdId])
 			} else {
 				someMsg := moreThanFourth(cmdId)
 				if someMsg != nil {
@@ -644,6 +646,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 					r.cmds[cmdId] = someMsg.Cmds[cmdId]
 					r.deps[cmdId] = someMsg.Deps[cmdId]
 					acceptedCmds[cmdId] = struct{}{}
+					builder.adjust(cmdId, r.deps[cmdId])
 				}
 			}
 		}
@@ -662,6 +665,8 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	}
 
 	r.cballot = r.ballot
+	r.committer = builder.buildCommitterFrom(r.committer,
+		&(r.Mutex), &(r.Shutdown))
 
 	sync := &yagpaxosproto.MSync{
 		Replica: r.Id,

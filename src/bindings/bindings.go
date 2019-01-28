@@ -337,7 +337,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 			}
 		} else {
 			if b.verbose {
-				log.Println("Sent to everyone")
+				log.Println("Sent to everyone", args.CommandId)
 			}
 			for rep := 0; rep < b.n; rep++ {
 				if b.writers[rep] != nil {

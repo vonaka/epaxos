@@ -238,9 +238,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 
 	_, exists = r.cmds[msg.CommandId]
 	if !exists {
-		r.phases[msg.CommandId] = FAST_ACCEPT
-		r.cmds[msg.CommandId] = msg.Command
-		r.deps[msg.CommandId] = yagpaxosproto.NewDepSet()
+		deps := yagpaxosproto.NewDepSet()
 
 		if r.ignoreCommitted {
 			r.committer.undeliveredIter(func(cid int32) {
@@ -248,17 +246,22 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 					r.phases[cid] != START &&
 					r.phases[cid] != COMMIT &&
 					inConflict(r.cmds[cid], msg.Command) {
-					r.deps[msg.CommandId].Add(cid)
+					deps.Add(cid)
 				}
 			})
 		} else {
 			for cid, p := range r.phases {
 				if cid != msg.CommandId && p != START &&
 					inConflict(r.cmds[cid], msg.Command) {
-					r.deps[msg.CommandId].Add(cid)
+					deps.Add(cid)
 				}
 			}
 		}
+
+		r.phases[msg.CommandId] = FAST_ACCEPT
+		r.cmds[msg.CommandId] = msg.Command
+		r.deps[msg.CommandId] = deps
+
 	}
 
 	fastAck := &yagpaxosproto.MFastAck{
@@ -609,7 +612,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 					n++
 				}
 
-				if n >= r.N/4 { // maybe n > r.N.4 ?
+				if n > r.N/4 {
 					return newLeaderAck0
 				}
 			}

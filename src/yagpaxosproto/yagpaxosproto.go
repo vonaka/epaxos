@@ -151,7 +151,7 @@ func NewDepSet() DepSet {
 	}
 }
 
-func (d DepSet) Add(cmdId int32) {
+func (d *DepSet) Add(cmdId int32) {
 	if d.Size < len(d.Set) {
 		d.Set[d.Size] = cmdId
 		d.Size++

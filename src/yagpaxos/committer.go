@@ -1,7 +1,9 @@
 package yagpaxos
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 	"yagpaxosproto"
@@ -105,20 +107,79 @@ func (c *committer) undeliveredIter(f func(int32)) {
 	}
 }
 
+type commandIdList struct {
+	cmdId    int32
+	index    int
+	next     *commandIdList
+	previous *commandIdList
+}
+
 type buildingBlock struct {
-	cmds          []int32
 	nextBlock     *buildingBlock
 	previousBlock *buildingBlock
+	head          *commandIdList
+	tail          *commandIdList
 }
 
 type cmdPos struct {
 	block *buildingBlock
-	id    int
+	list  *commandIdList
 }
 
 type committerBuilder struct {
 	headBlock *buildingBlock
 	cmdDesc   map[int32]*cmdPos
+}
+
+func newIdList(cmdId int32) *commandIdList {
+	return &commandIdList{
+		cmdId:    cmdId,
+		next:     nil,
+		previous: nil,
+	}
+}
+
+func (l *commandIdList) remove() {
+	if l == nil {
+		return
+	}
+
+	if l.previous != nil {
+		l.previous.next = l.next
+	}
+	if l.next != nil {
+		l.next.previous = l.previous
+	}
+
+	list := l.next
+	for list != nil {
+		list.index--
+		list = list.next
+	}
+
+	l.next = nil
+	l.previous = nil
+}
+
+func (l *commandIdList) before(l2 *commandIdList) {
+	if l == nil || l2 == nil {
+		return
+	}
+
+	l.index = l2.index
+	l.previous = l2.previous
+	if l.previous != nil {
+		l.previous.next = l
+	}
+
+	l.next = l2
+	l2.previous = l
+
+	list := l.next
+	for list != nil {
+		list.index++
+		list = list.next
+	}
 }
 
 func newBuilder() *committerBuilder {
@@ -128,52 +189,51 @@ func newBuilder() *committerBuilder {
 	}
 }
 
-func (b1 *buildingBlock) putInFrontOf(b2 *buildingBlock) {
-	if b2.nextBlock != nil {
-		b2.nextBlock.previousBlock = b2.previousBlock
-	}
+func (b *committerBuilder) join(b1 *buildingBlock, b2 *buildingBlock) {
 	if b2.previousBlock != nil {
 		b2.previousBlock.nextBlock = b2.nextBlock
 	}
+	if b2.nextBlock != nil {
+		b2.nextBlock.previousBlock = b2.previousBlock
+	}
+	b2.nextBlock = nil
+	b2.previousBlock = nil
 
-	b2.nextBlock = b1.nextBlock
-	if b1.nextBlock != nil {
-		b1.nextBlock.previousBlock = b2
+	b1.tail.next = b2.head
+	b2.head.previous = b1.tail
+
+	tailIndex := b1.tail.index
+	list := b2.head
+	for list != nil {
+		list.index += (tailIndex + 1)
+		b.cmdDesc[list.cmdId].block = b1
+		list = list.next
 	}
 
-	b2.previousBlock = b1
-	b1.nextBlock = b2
-}
+	b1.tail = b2.tail
 
-func (builder *committerBuilder) merge(b1 *buildingBlock, b2 *buildingBlock) {
-	b1.putInFrontOf(b2)
-
-	b1Len := len(b1.cmds)
-	for i, id := range b2.cmds {
-		b1.cmds = append(b1.cmds, id)
-		builder.cmdDesc[id].block = b1
-		builder.cmdDesc[id].id = i + b1Len
-	}
-	b1.nextBlock = b2.nextBlock
-	if b1.nextBlock != nil {
-		b1.nextBlock.previousBlock = b1
-	}
-
-	if builder.headBlock == b2 {
-		builder.headBlock = b1
+	if b.headBlock == b2 {
+		b.headBlock = b1
 	}
 }
 
 func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
 	var block *buildingBlock
-	id := 0
+	var list *commandIdList
 
 	cmdInfo, exists := b.cmdDesc[cmdId]
 	if !exists {
+		list = &commandIdList{
+			cmdId:    cmdId,
+			index:    0,
+			next:     nil,
+			previous: nil,
+		}
 		block = &buildingBlock{
-			cmds:          []int32{cmdId},
 			nextBlock:     b.headBlock,
 			previousBlock: nil,
+			head:          list,
+			tail:          list,
 		}
 		if b.headBlock != nil {
 			b.headBlock.previousBlock = block
@@ -181,67 +241,50 @@ func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
 		b.headBlock = block
 		b.cmdDesc[cmdId] = &cmdPos{
 			block: block,
-			id:    0,
+			list:  list,
 		}
 	} else {
 		block = cmdInfo.block
-		id = cmdInfo.id
+		list = cmdInfo.list
 	}
 
-	beforeBlockLeader := []int32{}
-	afterBlockLeader := []int32{}
-	copy(beforeBlockLeader, block.cmds[:id])
-	copy(afterBlockLeader, block.cmds[id:])
-	newDepId := len(beforeBlockLeader)
 	dep.Iter(func(depCmdId int32) bool {
 		depCmdInfo, exists := b.cmdDesc[depCmdId]
 
 		if exists {
 			depBlock := depCmdInfo.block
-			depId := depCmdInfo.id
+			depList := depCmdInfo.list
 
 			if depBlock != block {
-				block.cmds = append(beforeBlockLeader, afterBlockLeader...)
-				for i := range afterBlockLeader {
-					b.cmdDesc[afterBlockLeader[i]].id = i + newDepId
-				}
-				b.merge(depBlock, block)
+				b.join(depBlock, block)
 				block = depBlock
-				id += newDepId
-				beforeBlockLeader = []int32{}
-				afterBlockLeader = []int32{}
-				copy(beforeBlockLeader, block.cmds[:id])
-				copy(afterBlockLeader, block.cmds[id:])
-				newDepId = len(beforeBlockLeader)
-			} else if depId > id {
-				beforeBlockLeader = append(beforeBlockLeader, depCmdId)
-				b.cmdDesc[cmdId] = &cmdPos{
-					block: block,
-					id:    newDepId,
+			} else if list.index < depList.index {
+				depList.remove()
+				depList.before(list)
+				if block.head == list {
+					block.head = depList
 				}
-				newDepId++
-				afterBlockLeader1 := []int32{}
-				afterBlockLeader2 := []int32{}
-				copy(afterBlockLeader1, afterBlockLeader[:depId])
-				copy(afterBlockLeader2, afterBlockLeader[(depId+1):])
-				afterBlockLeader =
-					append(afterBlockLeader1, afterBlockLeader2...)
 			}
 		} else {
-			beforeBlockLeader = append(beforeBlockLeader, depCmdId)
-			b.cmdDesc[cmdId] = &cmdPos{
-				block: block,
-				id:    newDepId,
+			depList := &commandIdList{
+				cmdId:    depCmdId,
+				index:    0,
+				next:     nil,
+				previous: nil,
 			}
-			newDepId++
+
+			depList.before(list)
+			if block.head == list {
+				block.head = depList
+			}
+			b.cmdDesc[depCmdId] = &cmdPos{
+				block: block,
+				list:  depList,
+			}
 		}
+
 		return false
 	})
-
-	block.cmds = append(beforeBlockLeader, afterBlockLeader...)
-	for i := range afterBlockLeader {
-		b.cmdDesc[afterBlockLeader[i]].id = i + newDepId
-	}
 }
 
 func (builder *committerBuilder) buildCommitterFrom(oldCommitter *committer,
@@ -249,13 +292,61 @@ func (builder *committerBuilder) buildCommitterFrom(oldCommitter *committer,
 	block := builder.headBlock
 	committer := newCommitter(m, shutdown)
 	for block != nil {
-		for i := range block.cmds {
-			instance, exists := oldCommitter.instances[block.cmds[i]]
+		list := block.head
+		for list != nil {
+			cmdId := list.cmdId
+			instance, exists := oldCommitter.instances[cmdId]
 			if exists && instance <= oldCommitter.delivered {
+				list = list.next
 				continue
 			}
-			committer.add(block.cmds[i])
+			committer.add(cmdId)
+			list = list.next
 		}
+		block = block.nextBlock
 	}
+
 	return committer
 }
+
+func (list *commandIdList) String() string {
+	buffer := new(bytes.Buffer)
+
+	fmt.Fprintf(buffer, "[ ")
+	for list != nil {
+		fmt.Fprintf(buffer, "%v, ", list.cmdId)
+		list = list.next
+	}
+	fmt.Fprintf(buffer, "]")
+
+	return buffer.String()
+}
+
+func (builder *committerBuilder) String() string {
+	buffer := new(bytes.Buffer)
+	block := builder.headBlock
+
+	fmt.Fprintf(buffer, "*  ")
+	for block != nil {
+		fmt.Fprintf(buffer, "%v\n|_ ", block.head)
+		block = block.nextBlock
+	}
+	fmt.Fprintf(buffer, "<>")
+
+	return buffer.String()
+}
+
+/*func (builder *committerBuilder) String() string {
+	buffer := new(bytes.Buffer)
+	block := builder.headBlock
+
+	fmt.Fprintf(buffer, "*  ")
+	for block != nil {
+		fmt.Fprintf(buffer, "%v\n|_ ", block.cmds)
+		block = block.nextBlock
+	}
+	fmt.Fprintf(buffer, "<>")
+
+	return buffer.String()
+}
+*/

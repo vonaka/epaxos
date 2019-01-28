@@ -113,7 +113,8 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 		return
 	}
 
-	for _, q := range qs.quorums {
+	for i := 0; i < len(qs.quorums); i++ {
+		q := qs.quorums[i]
 		if qs.related(q.elements[0], e) {
 			if q.size >= qs.neededSize {
 				q.elements = append(q.elements, e)

@@ -335,18 +335,3 @@ func (builder *committerBuilder) String() string {
 
 	return buffer.String()
 }
-
-/*func (builder *committerBuilder) String() string {
-	buffer := new(bytes.Buffer)
-	block := builder.headBlock
-
-	fmt.Fprintf(buffer, "*  ")
-	for block != nil {
-		fmt.Fprintf(buffer, "%v\n|_ ", block.cmds)
-		block = block.nextBlock
-	}
-	fmt.Fprintf(buffer, "<>")
-
-	return buffer.String()
-}
-*/

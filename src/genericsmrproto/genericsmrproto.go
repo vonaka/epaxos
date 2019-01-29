@@ -18,6 +18,7 @@ const (
 
 type Propose struct {
 	CommandId int32
+	ClientId  int32
 	Command   state.Command
 	Timestamp int64
 }

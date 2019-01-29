@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"os/exec"
 	"state"
 	"strconv"
@@ -26,6 +27,7 @@ const TIMEOUT = 3 * time.Second
 const MAX_ATTEMPTS = 3
 
 type Parameters struct {
+	clientId       int32
 	masterAddr     string
 	masterPort     int
 	verbose        bool
@@ -47,6 +49,7 @@ type Parameters struct {
 
 func NewParameters(masterAddr string, masterPort int, verbose bool, leaderless bool, fast bool, localReads bool) *Parameters {
 	return &Parameters{
+		clientId:       int32(os.Getpid()),
 		masterAddr:     masterAddr,
 		masterPort:     masterPort,
 		verbose:        verbose,
@@ -269,8 +272,12 @@ func (b *Parameters) Disconnect() {
 // not idempotent in case of a failure
 func (b *Parameters) Write(key int64, value []byte) {
 	b.id++
-	args := genericsmrproto.Propose{b.id,
-		state.Command{state.PUT, state.Key(key), value}, 0}
+	args := genericsmrproto.Propose{
+		CommandId: b.id,
+		ClientId:  b.clientId,
+		Command:   state.Command{state.PUT, state.Key(key), value},
+		Timestamp: 0,
+	}
 
 	if b.verbose {
 		log.Println(args.Command.String())
@@ -281,8 +288,12 @@ func (b *Parameters) Write(key int64, value []byte) {
 
 func (b *Parameters) Read(key int64) []byte {
 	b.id++
-	args := genericsmrproto.Propose{b.id,
-		state.Command{state.GET, state.Key(key), state.NIL()}, 0}
+	args := genericsmrproto.Propose{
+		CommandId: b.id,
+		ClientId:  b.clientId,
+		Command:   state.Command{state.GET, state.Key(key), state.NIL()},
+		Timestamp: 0,
+	}
 
 	if b.verbose {
 		log.Println(args.Command.String())
@@ -293,8 +304,12 @@ func (b *Parameters) Read(key int64) []byte {
 
 func (b *Parameters) Scan(key int64, count int64) []byte {
 	b.id++
-	args := genericsmrproto.Propose{b.id,
-		state.Command{state.SCAN, state.Key(key), make([]byte, 8)}, 0}
+	args := genericsmrproto.Propose{
+		CommandId: b.id,
+		ClientId:  b.clientId,
+		Command:   state.Command{state.SCAN, state.Key(key), make([]byte, 8)},
+		Timestamp: 0,
+	}
 
 	binary.LittleEndian.PutUint64(args.Command.V, uint64(count))
 

@@ -229,19 +229,21 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		return
 	}
 
-	_, exists := r.proposes[msg.CommandId]
+	cmdId := constructCommandId(msg.ClientId, msg.CommandId)
+
+	_, exists := r.proposes[cmdId]
 	if exists {
 		return
 	}
-	r.proposes[msg.CommandId] = msg
+	r.proposes[cmdId] = msg
 
-	_, exists = r.cmds[msg.CommandId]
+	_, exists = r.cmds[cmdId]
 	if !exists {
 		deps := yagpaxosproto.NewDepSet()
 
 		if r.ignoreCommitted {
 			r.committer.undeliveredIter(func(cid int32) {
-				if cid != msg.CommandId &&
+				if cid != cmdId &&
 					r.phases[cid] != START &&
 					r.phases[cid] != COMMIT &&
 					inConflict(r.cmds[cid], msg.Command) {
@@ -250,29 +252,29 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 			})
 		} else {
 			for cid, p := range r.phases {
-				if cid != msg.CommandId && p != START &&
+				if cid != cmdId && p != START &&
 					inConflict(r.cmds[cid], msg.Command) {
 					deps.Add(cid)
 				}
 			}
 		}
 
-		r.phases[msg.CommandId] = FAST_ACCEPT
-		r.cmds[msg.CommandId] = msg.Command
-		r.deps[msg.CommandId] = deps
+		r.phases[cmdId] = FAST_ACCEPT
+		r.cmds[cmdId] = msg.Command
+		r.deps[cmdId] = deps
 
 	}
 
 	fastAck := &yagpaxosproto.MFastAck{
 		Replica:   r.Id,
 		Ballot:    r.ballot,
-		CommandId: msg.CommandId,
+		CommandId: cmdId,
 		Command:   msg.Command,
-		Dep:       r.deps[msg.CommandId],
+		Dep:       r.deps[cmdId],
 	}
 	if r.status == LEADER {
-		r.committer.add(msg.CommandId)
-		fastAck.AcceptId = r.committer.getInstance(msg.CommandId)
+		r.committer.add(cmdId)
+		fastAck.AcceptId = r.committer.getInstance(cmdId)
 	} else {
 		fastAck.AcceptId = -1
 	}
@@ -422,7 +424,7 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 
 		proposeReply := &genericsmrproto.ProposeReplyTS{
 			OK:        genericsmr.TRUE,
-			CommandId: cmdId,
+			CommandId: p.CommandId,
 			Value:     v,
 			Timestamp: p.Timestamp,
 		}
@@ -839,4 +841,9 @@ func leader(ballot int32, repNum int) int32 {
 
 func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
+}
+
+// Cantor pairing
+func constructCommandId(clientId, seqNum int32) int32 {
+	return (clientId+seqNum)*(clientId+seqNum+1)/2 + seqNum
 }

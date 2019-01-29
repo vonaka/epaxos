@@ -35,7 +35,7 @@ func newGc(clean func(int32), mutex *sync.Mutex, shutdown *bool) *gc {
 	return &g
 }
 
-func (g *gc) collect(cmdId int32, replicaId int32, totalReplicaNum int) {
+func (g *gc) collect(cmdId, replicaId int32, totalReplicaNum int) {
 	rs, exists := g.cmds[cmdId]
 	if !exists {
 		g.cmds[cmdId] = make(map[int32]struct{})

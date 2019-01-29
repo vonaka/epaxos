@@ -189,7 +189,7 @@ func newBuilder() *committerBuilder {
 	}
 }
 
-func (b *committerBuilder) join(b1 *buildingBlock, b2 *buildingBlock) {
+func (b *committerBuilder) join(b1, b2 *buildingBlock) {
 	if b2.previousBlock != nil {
 		b2.previousBlock.nextBlock = b2.nextBlock
 	}

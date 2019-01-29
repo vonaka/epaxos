@@ -75,8 +75,7 @@ type CommunicationSupply struct {
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty bool, exec bool, lread bool,
-	dreply bool, ignoreCommitted bool) *Replica {
+	thrifty, exec, lread, dreply, ignoreCommitted bool) *Replica {
 
 	r := Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
@@ -295,7 +294,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		fastQuorumSize := 3*r.N/4 + 1
 		slowQuorumSize := r.N/2 + 1
 
-		related := func(e1 interface{}, e2 interface{}) bool {
+		related := func(e1, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
 			return fastAck1.Dep.SmartEquals(fastAck2.Dep,
@@ -460,7 +459,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	if !exists {
 		slowQuorumSize := r.N/2 + 1
 
-		related := func(e1 interface{}, e2 interface{}) bool {
+		related := func(e1, e2 interface{}) bool {
 			return true
 		}
 
@@ -738,7 +737,7 @@ func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
 	if !exists {
 		slowQuorumSize := r.N / 2 //+1 ?
 
-		related := func(e1 interface{}, e2 interface{}) bool {
+		related := func(e1, e2 interface{}) bool {
 			return true
 		}
 

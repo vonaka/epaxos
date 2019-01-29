@@ -293,7 +293,8 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 
 	if !exists {
 		fastQuorumSize := 3*r.N/4 + 1
-		waitFor := time.Duration(r.N+1) * r.cs.maxLatency // FIXME
+		slowQuorumSize := r.N/2 + 1
+
 		related := func(e1 interface{}, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
@@ -303,12 +304,19 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 					return exists && (p == COMMIT || p == DELIVER)
 				})
 		}
-		wakeup := func() bool {
-			_, exists := r.proposes[msg.CommandId]
-			return exists
+
+		strongTest := func(q *quorum) bool {
+			return q.size >= fastQuorumSize
 		}
-		qs = newQuorumSet(fastQuorumSize, waitFor, related,
-			wakeup, r.handleFastAcks, true)
+
+		weakTest := func(q *quorum) bool {
+			return q.size >= slowQuorumSize
+		}
+
+		waitFor := time.Duration(r.N+1) * r.cs.maxLatency // FIXME
+
+		qs = newQuorumSet(related, strongTest,
+			weakTest, r.handleFastAcks, waitFor)
 		r.fastAckQuorumSets[msg.CommandId] = qs
 	}
 
@@ -328,21 +336,13 @@ func (r *Replica) handleFastAcks(q *quorum) {
 	}
 
 	fastQuorumSize := 3*r.N/4 + 1
-	slowQuorumSize := r.N/2 + 1
 
-	leaderMsg := q.getLeaderMsg()
+	leaderMsg := q.getLeaderElement()
 	if leaderMsg == nil {
 		return
 	}
 	leaderFastAck := leaderMsg.(*yagpaxosproto.MFastAck)
 	if r.ballot != leaderFastAck.Ballot {
-		return
-	}
-
-	_, exists := r.fastAckQuorumSets[leaderFastAck.CommandId]
-	if !exists ||
-		r.fastAckQuorumSets[leaderFastAck.CommandId].totalSize <
-			slowQuorumSize {
 		return
 	}
 
@@ -459,15 +459,21 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	qs, exists := r.slowAckQuorumSets[msg.CommandId]
 	if !exists {
 		slowQuorumSize := r.N/2 + 1
-		waitFor := time.Duration(r.N+1) * r.cs.maxLatency // FIXME
+
 		related := func(e1 interface{}, e2 interface{}) bool {
 			return true
 		}
-		wakeup := func() bool {
-			return true
+
+		strongTest := func(q *quorum) bool {
+			return q.size >= slowQuorumSize
 		}
-		qs = newQuorumSet(slowQuorumSize, waitFor, related,
-			wakeup, r.handleSlowAcks, true)
+
+		weakTest := strongTest
+
+		waitFor := time.Duration(0)
+
+		qs = newQuorumSet(related, strongTest,
+			weakTest, r.handleSlowAcks, waitFor)
 		r.slowAckQuorumSets[msg.CommandId] = qs
 	}
 
@@ -488,12 +494,18 @@ func (r *Replica) handleSlowAcks(q *quorum) {
 		return
 	}
 
-	leaderMsg := q.getLeaderMsg()
+	leaderMsg := q.getLeaderElement()
 	if leaderMsg == nil {
 		return
 	}
 	leaderSlowAck := leaderMsg.(*yagpaxosproto.MSlowAck)
 	if r.ballot != leaderSlowAck.Ballot {
+		return
+	}
+
+	_, cmdExists := r.cmds[leaderSlowAck.CommandId]
+	_, depExists := r.deps[leaderSlowAck.CommandId]
+	if !cmdExists || !depExists {
 		return
 	}
 
@@ -545,15 +557,21 @@ func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
 	qs, exists := r.newLeaderAckQuorumSets[msg.Ballot]
 	if !exists {
 		slowQuorumSize := r.N/2 + 1
-		waitFor := 60 * time.Minute // FIXME
+
 		related := func(e1 interface{}, e2 interface{}) bool {
 			return true
 		}
-		wakeup := func() bool {
-			return true
+
+		strongTest := func(q *quorum) bool {
+			return q.size >= slowQuorumSize
 		}
-		qs = newQuorumSet(slowQuorumSize, waitFor, related,
-			wakeup, r.handleNewLeaderAcks, false)
+
+		weakTest := strongTest
+
+		waitFor := time.Duration(0)
+
+		qs = newQuorumSet(related, strongTest,
+			weakTest, r.handleNewLeaderAcks, waitFor)
 		r.newLeaderAckQuorumSets[msg.Ballot] = qs
 	}
 
@@ -580,7 +598,8 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	}
 
 	maxCballot := int32(0)
-	for _, e := range q.elements {
+	for i := 0; i < q.size; i++ {
+		e := q.elements[i]
 		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
 		if newLeaderAck.Cballot > maxCballot {
 			maxCballot = newLeaderAck.Cballot
@@ -589,10 +608,13 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 
 	moreThanFourth := func(cmdId int32) *yagpaxosproto.MNewLeaderAck {
 		n := 1
-		for id0, e0 := range q.elements {
+		for id0 := 0; id0 < q.size; id0++ {
+			e0 := q.elements[id0]
 			newLeaderAck0 := e0.(*yagpaxosproto.MNewLeaderAck)
 			d := newLeaderAck0.Deps[cmdId]
-			for id, e := range q.elements {
+			for id := 0; id < q.size; id++ {
+				e := q.elements[id]
+
 				if id == id0 {
 					continue
 				}
@@ -628,7 +650,8 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	acceptedCmds := make(map[int32]struct{})
 	builder := newBuilder()
 
-	for _, e := range q.elements {
+	for i := 0; i < q.size; i++ {
+		e := q.elements[i]
 		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
 		for cmdId, p := range newLeaderAck.Phases {
 			_, exists := acceptedCmds[cmdId]
@@ -713,16 +736,22 @@ func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
 
 	qs, exists := r.syncAckQuorumSets[msg.Ballot]
 	if !exists {
-		slowQuorumSize := r.N / 2
-		waitFor := 60 * time.Minute // FIXME
+		slowQuorumSize := r.N / 2 //+1 ?
+
 		related := func(e1 interface{}, e2 interface{}) bool {
 			return true
 		}
-		wakeup := func() bool {
-			return true
+
+		strongTest := func(q *quorum) bool {
+			return q.size >= slowQuorumSize
 		}
-		qs = newQuorumSet(slowQuorumSize, waitFor, related,
-			wakeup, r.handleSyncAcks, false)
+
+		weakTest := strongTest
+
+		waitFor := time.Duration(0)
+
+		qs = newQuorumSet(related, strongTest,
+			weakTest, r.handleSyncAcks, waitFor)
 		r.syncAckQuorumSets[msg.Ballot] = qs
 	}
 
@@ -737,7 +766,7 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 		return
 	}
 
-	slowQuorumSize := r.N / 2
+	slowQuorumSize := r.N / 2 // +1 ?
 
 	if q.size < slowQuorumSize {
 		return

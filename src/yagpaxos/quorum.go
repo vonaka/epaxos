@@ -5,8 +5,9 @@ import (
 	"time"
 )
 
+const INITIAL_Q_SIZE = 20
+
 type quorum struct {
-	// not the desired size, but the actual one
 	size     int
 	leaderId int
 	elements []interface{}
@@ -14,148 +15,104 @@ type quorum struct {
 
 type quorumSet struct {
 	sync.Mutex
-	neededSize     int
-	totalSize      int
-	quorums        map[int]*quorum
-	leaderQuorum   *quorum
-	biggestQuorum  *quorum
-	related        func(interface{}, interface{}) bool
-	wakeupIf       func() bool
-	out            chan struct{}
-	stop           chan struct{}
-	called         bool
-	onlyWithLeader bool
+	mainQuorum *quorum
+	quorums    []*quorum
+	realLen    int
+	related    func(interface{}, interface{}) bool
+	strongTest func(*quorum) bool
+	weakTest   func(*quorum) bool
+	handler    func(*quorum)
+	afterHours bool
 }
 
-func newQuorumSet(size int, waitFor time.Duration,
-	relation func(interface{}, interface{}) bool,
-	wakeupIf func() bool, handler func(*quorum),
-	onlyWithLeader bool) *quorumSet {
-	qs := &quorumSet{
-		neededSize:     size,
-		totalSize:      0,
-		quorums:        make(map[int]*quorum, size),
-		leaderQuorum:   nil,
-		biggestQuorum:  nil,
-		related:        relation,
-		wakeupIf:       wakeupIf,
-		out:            make(chan struct{}, size),
-		stop:           make(chan struct{}, 1),
-		called:         false,
-		onlyWithLeader: onlyWithLeader,
+func newQuorum() *quorum {
+	return &quorum{
+		size:     0,
+		leaderId: -1,
+		elements: make([]interface{}, INITIAL_Q_SIZE),
 	}
-
-	go func() {
-		stop := false
-		for !stop {
-			select {
-			case <-qs.out:
-				var q *quorum
-				if qs.onlyWithLeader {
-					qs.Lock()
-					q = qs.leaderQuorum
-					qs.Unlock()
-				} else {
-					qs.Lock()
-					q = qs.biggestQuorum
-					qs.Unlock()
-				}
-				handler(q)
-			case <-qs.stop:
-				var q *quorum
-				if qs.onlyWithLeader {
-					qs.Lock()
-					q = qs.leaderQuorum
-					qs.Unlock()
-				} else {
-					qs.Lock()
-					q = qs.biggestQuorum
-					qs.Unlock()
-				}
-				handler(q)
-				stop = true
-			}
-		}
-	}()
-
-	go func() {
-		time.Sleep(waitFor)
-		qs.stop <- struct{}{}
-	}()
-
-	return qs
 }
 
-func (q *quorum) getLeaderMsg() interface{} {
+func (q *quorum) add(e interface{}, fromLeader bool) {
+	if q.size < len(q.elements) {
+		q.elements[q.size] = e
+	} else {
+		q.elements = append(q.elements, e)
+	}
+	if fromLeader && q.leaderId == -1 {
+		q.leaderId = q.size
+	}
+	q.size++
+}
+
+func (q *quorum) getLeaderElement() interface{} {
 	if q.leaderId != -1 {
 		return q.elements[q.leaderId]
 	}
 	return nil
 }
 
+func newQuorumSet(related func(interface{}, interface{}) bool,
+	strongTest func(*quorum) bool, weakTest func(*quorum) bool,
+	handler func(*quorum), waitFor time.Duration) *quorumSet {
+	qs := &quorumSet{
+		mainQuorum: newQuorum(),
+		quorums:    make([]*quorum, INITIAL_Q_SIZE),
+		realLen:    0,
+		related:    related,
+		strongTest: strongTest,
+		weakTest:   weakTest,
+		handler:    handler,
+		afterHours: false,
+	}
+
+	go func() {
+		time.Sleep(waitFor)
+		qs.Lock()
+		defer qs.Unlock()
+		qs.afterHours = true
+		if qs.weakTest(qs.mainQuorum) {
+			go qs.handler(qs.mainQuorum)
+		}
+	}()
+
+	return qs
+}
+
 func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 	qs.Lock()
 	defer qs.Unlock()
 
-	if qs.neededSize < 1 {
-		if !qs.called && qs.wakeupIf() &&
-			(!qs.onlyWithLeader || qs.leaderQuorum != nil) {
-			qs.called = true
-			qs.out <- struct{}{}
+	qs.mainQuorum.add(e, fromLeader)
+	if qs.afterHours {
+		if qs.weakTest(qs.mainQuorum) {
+			go qs.handler(qs.mainQuorum)
 		}
 		return
 	}
 
-	// TODO: deal with duplicates
-	qs.totalSize++
-
-	if qs.called {
-		return
-	}
-
-	for i := 0; i < len(qs.quorums); i++ {
+	for i := 0; i < qs.realLen; i++ {
 		q := qs.quorums[i]
 		if qs.related(q.elements[0], e) {
-			if q.size >= qs.neededSize {
-				q.elements = append(q.elements, e)
-			} else {
-				q.elements[q.size] = e
-			}
-			if fromLeader && q.leaderId == -1 {
-				q.leaderId = q.size
-				qs.leaderQuorum = q
-			}
-			q.size++
-			if qs.biggestQuorum == nil || q.size > qs.biggestQuorum.size {
-				qs.biggestQuorum = q
-			}
-			if q.size >= qs.neededSize && qs.wakeupIf() &&
-				(!qs.onlyWithLeader || qs.leaderQuorum != nil) {
-				qs.called = true
-				qs.out <- struct{}{}
+			q.add(e, fromLeader)
+			if !qs.afterHours && qs.strongTest(q) {
+				go qs.handler(q)
 			}
 			return
 		}
 	}
 
-	i := len(qs.quorums)
-	q := &quorum{
-		size:     1,
-		leaderId: -1,
-		elements: make([]interface{}, qs.neededSize),
-	}
-	qs.quorums[i] = q
+	q := newQuorum()
+	q.add(e, fromLeader)
 
-	q.elements[0] = e
-	if fromLeader {
-		q.leaderId = 0
-		qs.leaderQuorum = q
+	if qs.realLen < len(qs.quorums) {
+		qs.quorums[qs.realLen] = q
+	} else {
+		qs.quorums = append(qs.quorums, q)
 	}
-	qs.biggestQuorum = q
+	qs.realLen++
 
-	if qs.neededSize < 2 && qs.wakeupIf() &&
-		(!qs.onlyWithLeader || qs.leaderQuorum != nil) {
-		qs.called = true
-		qs.out <- struct{}{}
+	if !qs.afterHours && qs.strongTest(q) {
+		go qs.handler(q)
 	}
 }

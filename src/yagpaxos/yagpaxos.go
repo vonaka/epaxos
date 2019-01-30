@@ -1,6 +1,7 @@
 package yagpaxos
 
 import (
+	"errors"
 	"fastrpc"
 	"genericsmr"
 	"genericsmrproto"
@@ -145,6 +146,9 @@ func NewReplica(replicaId int, peerAddrs []string,
 		if exists {
 			delete(r.slowAckQuorumSets, cmdId)
 		}
+
+		/* Wrong! Keys are ballots!
+
 		_, exists = r.newLeaderAckQuorumSets[cmdId]
 		if exists {
 			delete(r.newLeaderAckQuorumSets, cmdId)
@@ -152,7 +156,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		_, exists = r.syncAckQuorumSets[cmdId]
 		if exists {
 			delete(r.syncAckQuorumSets, cmdId)
-		}
+		} */
+
 	}, &r.Mutex, &r.Shutdown)
 
 	r.cs.fastAckRPC =
@@ -391,13 +396,8 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.Lock()
 	defer r.Unlock()
 
-	if r.status != LEADER && r.status != FOLLOWER {
-		return
-	} else if r.phases[msg.CommandId] == DELIVER {
-		go r.handleCollect(&yagpaxosproto.MCollect{
-			Replica:   msg.Replica,
-			CommandId: msg.CommandId,
-		})
+	if (r.status != LEADER && r.status != FOLLOWER) ||
+		r.phases[msg.CommandId] == DELIVER {
 		return
 	}
 
@@ -405,21 +405,25 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.cmds[msg.CommandId] = msg.Command
 	r.deps[msg.CommandId] = msg.Dep
 
-	f := func(cmdId int32) {
+	f := func(cmdId int32) error {
 		if r.phases[cmdId] != COMMIT {
-			return
+			return errors.New("command has not yet been committed")
 		}
 		r.phases[cmdId] = DELIVER
 
 		if !r.Exec {
-			return
+			return nil
 		}
 		cmd := r.cmds[cmdId]
 		v := cmd.Execute(r.State)
 
+		if !r.Dreply {
+			return nil
+		}
+
 		p, exists := r.proposes[cmdId]
-		if !exists || !r.Dreply {
-			return
+		if !exists {
+			return nil
 		}
 
 		proposeReply := &genericsmrproto.ProposeReplyTS{
@@ -429,24 +433,24 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 			Timestamp: p.Timestamp,
 		}
 		r.ReplyProposeTS(proposeReply, p.Reply, p.Mutex)
+
+		return nil
 	}
 
 	if r.status == LEADER {
 		r.committer.deliver(msg.CommandId, f)
 	} else if r.status == FOLLOWER {
-		r.committer.safeDeliver(msg.CommandId, msg.Dep, f)
+		r.committer.safeDeliver(msg.CommandId, f)
 	}
 
-	collect := &yagpaxosproto.MCollect{
-		Replica:   r.Id,
-		CommandId: msg.CommandId,
+	if r.committer.wasDelivered(msg.CommandId) {
+		collect := &yagpaxosproto.MCollect{
+			Replica:   r.Id,
+			CommandId: msg.CommandId,
+		}
+		go r.sendToAll(collect, r.cs.collectRPC)
+		go r.handleCollect(collect)
 	}
-	go r.sendToAll(collect, r.cs.collectRPC)
-	go r.handleCollect(collect)
-	go r.handleCollect(&yagpaxosproto.MCollect{
-		Replica:   msg.Replica,
-		CommandId: msg.CommandId,
-	})
 }
 
 func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {

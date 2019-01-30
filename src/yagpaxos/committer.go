@@ -65,11 +65,14 @@ func (c *committer) addTo(cmdId int32, instance int) {
 	}
 }
 
-func (c *committer) deliver(cmdId int32, f func(int32)) {
+func (c *committer) deliver(cmdId int32, f func(int32) error) {
 	i := c.delivered + 1
 	j := c.instances[cmdId]
 	for ; i <= j; i++ {
-		f(c.cmdIds[i])
+		if f(c.cmdIds[i]) != nil {
+			c.delivered = i - 1
+			return
+		}
 	}
 
 	if j > c.delivered {
@@ -77,8 +80,7 @@ func (c *committer) deliver(cmdId int32, f func(int32)) {
 	}
 }
 
-func (c *committer) safeDeliver(cmdId int32, cmdDeps yagpaxosproto.DepSet,
-	f func(int32)) error {
+func (c *committer) safeDeliver(cmdId int32, f func(int32) error) error {
 	i := c.delivered + 1
 	j := c.instances[cmdId]
 	for ; i <= j; i++ {
@@ -86,7 +88,9 @@ func (c *committer) safeDeliver(cmdId int32, cmdDeps yagpaxosproto.DepSet,
 		if !exists {
 			return errors.New("some dependency is no commited yet")
 		} else {
-			f(c.cmdIds[i])
+			if f(c.cmdIds[i]) != nil {
+				return nil
+			}
 			c.delivered = i
 		}
 	}

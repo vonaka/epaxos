@@ -151,6 +151,17 @@ func NewDepSet() DepSet {
 	}
 }
 
+func (d DepSet) Copy() DepSet {
+	nd := NewDepSet()
+
+	d.Iter(func(cmdId int32) bool {
+		nd.Add(cmdId)
+		return false
+	})
+
+	return nd
+}
+
 func (d *DepSet) Add(cmdId int32) {
 	if d.Size < len(d.Set) {
 		d.Set[d.Size] = cmdId

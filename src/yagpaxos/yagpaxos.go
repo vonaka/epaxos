@@ -547,7 +547,11 @@ func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
 	if l := leader(r.ballot, r.N); l == r.Id {
 		go r.handleNewLeaderAck(newLeaderAck)
 	} else {
-		go r.SendMsg(l, r.cs.newLeaderAckRPC, newLeaderAck)
+		go func() {
+			r.Lock()
+			defer r.Unlock()
+			r.SendMsg(l, r.cs.newLeaderAckRPC, newLeaderAck)
+		}()
 	}
 }
 
@@ -706,7 +710,11 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		Cmds:    r.cmds,
 		Deps:    r.deps,
 	}
-	go r.sendToAll(sync, r.cs.syncRPC)
+	go func() {
+		r.Lock()
+		defer r.Unlock()
+		r.sendToAll(sync, r.cs.syncRPC)
+	}()
 }
 
 func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {

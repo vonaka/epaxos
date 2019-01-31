@@ -67,23 +67,23 @@ func (c *committer) addTo(cmdId int32, instance int) {
 
 func (c *committer) deliver(cmdId int32, f func(int32) error) {
 	i := c.delivered + 1
-	j := c.instances[cmdId]
-	for ; i <= j; i++ {
+	j, exists := c.instances[cmdId]
+	for ; exists && i <= j; i++ {
 		if f(c.cmdIds[i]) != nil {
 			c.delivered = i - 1
 			return
 		}
 	}
 
-	if j > c.delivered {
+	if exists && j > c.delivered {
 		c.delivered = j
 	}
 }
 
 func (c *committer) safeDeliver(cmdId int32, f func(int32) error) error {
 	i := c.delivered + 1
-	j := c.instances[cmdId]
-	for ; i <= j; i++ {
+	j, exists := c.instances[cmdId]
+	for ; exists && i <= j; i++ {
 		_, exists := c.cmdIds[i]
 		if !exists {
 			return errors.New("some dependency is no commited yet")
@@ -138,6 +138,7 @@ type committerBuilder struct {
 func newIdList(cmdId int32) *commandIdList {
 	return &commandIdList{
 		cmdId:    cmdId,
+		index:    0,
 		next:     nil,
 		previous: nil,
 	}
@@ -161,6 +162,7 @@ func (l *commandIdList) remove() {
 		list = list.next
 	}
 
+	l.index = 0
 	l.next = nil
 	l.previous = nil
 }
@@ -227,12 +229,8 @@ func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
 
 	cmdInfo, exists := b.cmdDesc[cmdId]
 	if !exists {
-		list = &commandIdList{
-			cmdId:    cmdId,
-			index:    0,
-			next:     nil,
-			previous: nil,
-		}
+		list = newIdList(cmdId)
+
 		block = &buildingBlock{
 			nextBlock:     b.headBlock,
 			previousBlock: nil,
@@ -263,6 +261,9 @@ func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
 				b.join(depBlock, block)
 				block = depBlock
 			} else if list.index < depList.index {
+				if block.tail == depList {
+					block.tail = depList.previous
+				}
 				depList.remove()
 				depList.before(list)
 				if block.head == list {
@@ -270,13 +271,7 @@ func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
 				}
 			}
 		} else {
-			depList := &commandIdList{
-				cmdId:    depCmdId,
-				index:    0,
-				next:     nil,
-				previous: nil,
-			}
-
+			depList := newIdList(depCmdId)
 			depList.before(list)
 			if block.head == list {
 				block.head = depList

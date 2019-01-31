@@ -6,6 +6,7 @@ const WAIT_FOR = 800
 
 type gc struct {
 	sync.Mutex
+	clean  func(int32)
 	cmds   map[int32]map[int32]struct{}
 	trash  map[int32]struct{}
 	wakeup chan struct{}
@@ -13,6 +14,7 @@ type gc struct {
 
 func newGc(clean func(int32), mutex *sync.Mutex, shutdown *bool) *gc {
 	g := gc{
+		clean:  clean,
 		cmds:   make(map[int32]map[int32]struct{}),
 		trash:  make(map[int32]struct{}, WAIT_FOR),
 		wakeup: make(chan struct{}, 1),

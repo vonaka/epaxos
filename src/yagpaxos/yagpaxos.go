@@ -194,6 +194,15 @@ func (r *Replica) run() {
 
 	go r.WaitForClientConnections()
 
+	go func() {
+		for !r.Shutdown {
+			time.Sleep(2 * time.Second)
+			r.Lock()
+			r.flush()
+			r.Unlock()
+		}
+	}()
+
 	for !r.Shutdown {
 		select {
 		case propose := <-r.ProposeChan:
@@ -504,6 +513,8 @@ func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
 		return
 	}
 
+	r.flush()
+
 	r.status = PREPARING
 	r.ballot = msg.Ballot
 
@@ -636,10 +647,6 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	r.deps = make(map[int32]yagpaxosproto.DepSet)
 	// TODO: reset committer, gc, and propose ?
 
-	phases := make(map[int32]int)
-	cmds := make(map[int32]state.Command)
-	deps := make(map[int32]yagpaxosproto.DepSet)
-
 	acceptedCmds := make(map[int32]struct{})
 	builder := newBuilder()
 
@@ -654,56 +661,42 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 			if p == COMMIT || p == DELIVER ||
 				(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot) {
 				if p == SLOW_ACCEPT {
-					phases[cmdId] = p
+					r.phases[cmdId] = p
 				} else {
-					phases[cmdId] = COMMIT
+					r.phases[cmdId] = COMMIT
 				}
-				cmds[cmdId] = newLeaderAck.Cmds[cmdId]
-				deps[cmdId] = newLeaderAck.Deps[cmdId]
+				r.cmds[cmdId] = newLeaderAck.Cmds[cmdId]
+				r.deps[cmdId] = newLeaderAck.Deps[cmdId]
 				acceptedCmds[cmdId] = struct{}{}
-				builder.adjust(cmdId, deps[cmdId])
-
-				r.cmds[cmdId] = cmds[cmdId]
-				r.deps[cmdId] = deps[cmdId]
-				r.phases[cmdId] = phases[cmdId]
+				builder.adjust(cmdId, r.deps[cmdId])
 			} else {
 				someMsg := moreThanFourth(cmdId)
 				if someMsg != nil {
-					phases[cmdId] = SLOW_ACCEPT
-					cmds[cmdId] = someMsg.Cmds[cmdId]
-					deps[cmdId] = someMsg.Deps[cmdId]
+					r.phases[cmdId] = SLOW_ACCEPT
+					r.cmds[cmdId] = someMsg.Cmds[cmdId]
+					r.deps[cmdId] = someMsg.Deps[cmdId]
 					acceptedCmds[cmdId] = struct{}{}
-					builder.adjust(cmdId, deps[cmdId])
-
-					r.cmds[cmdId] = cmds[cmdId]
-					r.deps[cmdId] = deps[cmdId]
-					r.phases[cmdId] = phases[cmdId]
+					builder.adjust(cmdId, r.deps[cmdId])
 				}
 			}
 		}
 	}
 
 	nopCmds := make(map[int32]struct{})
-	for _, dep := range deps {
+	for _, dep := range r.deps {
 		dep.Iter(func(depCmdId int32) bool {
-			p, exists := phases[depCmdId]
+			p, exists := r.phases[depCmdId]
 			if !exists || p == START {
-				phases[depCmdId] = SLOW_ACCEPT
-				cmds[depCmdId] = state.NOOP()[0]
+				r.phases[depCmdId] = SLOW_ACCEPT
+				r.cmds[depCmdId] = state.NOOP()[0]
 				nopCmds[depCmdId] = struct{}{}
 			}
 			return false
 		})
 	}
 	for nopId := range nopCmds {
-		deps[nopId] = yagpaxosproto.NilDepSet()
-
-		r.cmds[nopId] = cmds[nopId]
-		r.deps[nopId] = deps[nopId]
-		r.phases[nopId] = phases[nopId]
+		r.deps[nopId] = yagpaxosproto.NilDepSet()
 	}
-
-	r.clean()
 
 	r.cballot = r.ballot
 	r.committer = builder.buildCommitterFrom(r.committer,
@@ -712,9 +705,9 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	sync := &yagpaxosproto.MSync{
 		Replica: r.Id,
 		Ballot:  r.ballot,
-		Phases:  phases,
-		Cmds:    cmds,
-		Deps:    deps,
+		Phases:  r.phases,
+		Cmds:    r.cmds,
+		Deps:    r.deps,
 	}
 	go func() {
 		r.Lock()
@@ -746,19 +739,6 @@ func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
 	}
 	r.committer = builder.buildCommitterFrom(r.committer,
 		&(r.Mutex), &(r.Shutdown))
-
-	go func(cmdId int32) {
-		for !r.Shutdown {
-			time.Sleep(time.Second)
-			r.Lock()
-			r.committer.deliver(cmdId, r.executeAndReply)
-			if r.committer.wasDelivered(cmdId) {
-				r.Unlock()
-				return
-			}
-			r.Unlock()
-		}
-	}(r.committer.cmdIds[r.committer.last])
 
 	syncAck := &yagpaxosproto.MSyncAck{
 		Replica: r.Id,
@@ -818,6 +798,8 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 		return
 	}
 
+	r.clean()
+
 	r.status = LEADER
 	for cmdId, p := range r.phases {
 		if p == COMMIT {
@@ -833,19 +815,6 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 		go r.sendToAll(commit, r.cs.commitRPC)
 		go r.handleCommit(commit)
 	}
-
-	go func(cmdId int32) {
-		for !r.Shutdown {
-			time.Sleep(time.Second)
-			r.Lock()
-			r.committer.deliver(cmdId, r.executeAndReply)
-			if r.committer.wasDelivered(cmdId) {
-				r.Unlock()
-				return
-			}
-			r.Unlock()
-		}
-	}(r.committer.cmdIds[r.committer.last])
 }
 
 func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
@@ -924,6 +893,15 @@ func (r *Replica) clean() {
 		if r.committer.wasDelivered(cmdId) {
 			r.gc.clean(cmdId)
 		}
+	}
+}
+
+func (r *Replica) flush() {
+	cmdId := r.committer.cmdIds[r.committer.last]
+	if r.status == LEADER {
+		r.committer.deliver(cmdId, r.executeAndReply)
+	} else if r.status == FOLLOWER {
+		r.committer.safeDeliver(cmdId, r.executeAndReply)
 	}
 }
 

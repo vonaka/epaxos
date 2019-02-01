@@ -1,6 +1,7 @@
 package yagpaxos
 
 import (
+	"dlog"
 	"errors"
 	"fastrpc"
 	"genericsmr"
@@ -854,6 +855,11 @@ func (r *Replica) executeAndReply(cmdId int32) error {
 		return nil
 	}
 	cmd := r.cmds[cmdId]
+	if cmd.Op == state.NONE {
+		// NOOP
+		return nil
+	}
+	dlog.Printf("Executing " + cmd.String())
 	v := cmd.Execute(r.State)
 
 	if !r.Dreply {

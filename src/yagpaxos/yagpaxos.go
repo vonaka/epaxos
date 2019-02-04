@@ -799,8 +799,6 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 		return
 	}
 
-	r.clean()
-
 	r.status = LEADER
 	for cmdId, p := range r.phases {
 		if p == COMMIT {
@@ -816,6 +814,8 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 		go r.sendToAll(commit, r.cs.commitRPC)
 		go r.handleCommit(commit)
 	}
+
+	r.clean()
 }
 
 func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,

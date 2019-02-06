@@ -369,6 +369,7 @@ func (r *Replica) handleFastAcks(q *quorum) {
 	if q.size >= fastQuorumSize {
 		commit := &yagpaxosproto.MCommit{
 			Replica:   r.Id,
+			Ballot:    r.ballot,
 			CommandId: leaderFastAck.CommandId,
 			Command:   leaderFastAck.Command,
 			Dep:       leaderFastAck.Dep,
@@ -410,7 +411,7 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	r.Lock()
 	defer r.Unlock()
 
-	if (r.status != LEADER && r.status != FOLLOWER) ||
+	if (r.status != LEADER && r.status != FOLLOWER) || msg.Ballot > r.ballot ||
 		r.phases[msg.CommandId] == DELIVER {
 		return
 	}
@@ -498,6 +499,7 @@ func (r *Replica) handleSlowAcks(q *quorum) {
 
 	commit := &yagpaxosproto.MCommit{
 		Replica:   r.Id,
+		Ballot:    r.ballot,
 		CommandId: leaderSlowAck.CommandId,
 		Command:   r.cmds[leaderSlowAck.CommandId],
 		Dep:       r.deps[leaderSlowAck.CommandId],
@@ -807,6 +809,7 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 
 		commit := &yagpaxosproto.MCommit{
 			Replica:   r.Id,
+			Ballot:    r.ballot,
 			CommandId: cmdId,
 			Command:   r.cmds[cmdId],
 			Dep:       r.deps[cmdId],

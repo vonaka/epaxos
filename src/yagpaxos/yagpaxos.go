@@ -392,6 +392,8 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			Replica:   r.Id,
 			Ballot:    leaderFastAck.Ballot,
 			CommandId: leaderFastAck.CommandId,
+			Command:   leaderFastAck.Command,
+			Dep:       leaderFastAck.Dep,
 		}
 		go r.sendToAll(slowAck, r.cs.slowAckRPC)
 		go r.handleSlowAck(slowAck)
@@ -479,27 +481,17 @@ func (r *Replica) handleSlowAcks(q *quorum) {
 		return
 	}
 
-	leaderMsg := q.getLeaderElement()
-	if leaderMsg == nil {
-		return
-	}
-	leaderSlowAck := leaderMsg.(*yagpaxosproto.MSlowAck)
-	if r.ballot != leaderSlowAck.Ballot {
-		return
-	}
-
-	_, cmdExists := r.cmds[leaderSlowAck.CommandId]
-	_, depExists := r.deps[leaderSlowAck.CommandId]
-	if !cmdExists || !depExists {
+	someSlowAck := q.elements[0].(*yagpaxosproto.MSlowAck)
+	if r.ballot != someSlowAck.Ballot {
 		return
 	}
 
 	commit := &yagpaxosproto.MCommit{
 		Replica:   r.Id,
 		Ballot:    r.ballot,
-		CommandId: leaderSlowAck.CommandId,
-		Command:   r.cmds[leaderSlowAck.CommandId],
-		Dep:       r.deps[leaderSlowAck.CommandId],
+		CommandId: someSlowAck.CommandId,
+		Command:   someSlowAck.Command,
+		Dep:       someSlowAck.Dep,
 	}
 	go r.sendToAll(commit, r.cs.commitRPC)
 	go r.handleCommit(commit)

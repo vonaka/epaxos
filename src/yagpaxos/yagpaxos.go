@@ -393,11 +393,8 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			Ballot:    leaderFastAck.Ballot,
 			CommandId: leaderFastAck.CommandId,
 		}
-		if r.status == FOLLOWER {
-			go r.SendMsg(leaderFastAck.Replica, r.cs.slowAckRPC, slowAck)
-		} else {
-			go r.handleSlowAck(slowAck)
-		}
+		go r.sendToAll(slowAck, r.cs.slowAckRPC)
+		go r.handleSlowAck(slowAck)
 	}
 }
 
@@ -440,7 +437,7 @@ func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
 	r.Lock()
 	defer r.Unlock()
 
-	if r.status != LEADER || r.ballot != msg.Ballot {
+	if (r.status != LEADER && r.status != FOLLOWER) || r.ballot != msg.Ballot {
 		return
 	}
 

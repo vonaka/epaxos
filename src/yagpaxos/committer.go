@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"sync"
 	"time"
-	"yagpaxosproto"
 )
 
 type committer struct {
@@ -14,8 +13,8 @@ type committer struct {
 	first     int
 	last      int
 	delivered int
-	cmdIds    map[int]int32
-	instances map[int32]int
+	cmdIds    map[int]CommandId
+	instances map[CommandId]int
 }
 
 func newCommitter(m *sync.Mutex, shutdown *bool) *committer {
@@ -24,8 +23,8 @@ func newCommitter(m *sync.Mutex, shutdown *bool) *committer {
 		first:     -1,
 		last:      -1,
 		delivered: -1,
-		cmdIds:    make(map[int]int32, 10), // FIXME
-		instances: make(map[int32]int, 10), // FIXME
+		cmdIds:    make(map[int]CommandId, 10), // FIXME
+		instances: make(map[CommandId]int, 10), // FIXME
 	}
 
 	go func() {
@@ -46,18 +45,18 @@ func newCommitter(m *sync.Mutex, shutdown *bool) *committer {
 	return c
 }
 
-func (c *committer) getInstance(cmdId int32) int {
+func (c *committer) getInstance(cmdId CommandId) int {
 	return c.instances[cmdId]
 }
 
-func (c *committer) add(cmdId int32) {
+func (c *committer) add(cmdId CommandId) {
 	c.cmdIds[c.next] = cmdId
 	c.instances[cmdId] = c.next
 	c.last = c.next
 	c.next++
 }
 
-func (c *committer) addTo(cmdId int32, instance int) {
+func (c *committer) addTo(cmdId CommandId, instance int) {
 	c.cmdIds[instance] = cmdId
 	c.instances[cmdId] = instance
 	if instance > c.last {
@@ -65,7 +64,7 @@ func (c *committer) addTo(cmdId int32, instance int) {
 	}
 }
 
-func (c *committer) deliver(cmdId int32, f func(int32) error) {
+func (c *committer) deliver(cmdId CommandId, f func(CommandId) error) {
 	i := c.delivered + 1
 	j, exists := c.instances[cmdId]
 	for ; exists && i <= j; i++ {
@@ -80,7 +79,8 @@ func (c *committer) deliver(cmdId int32, f func(int32) error) {
 	}
 }
 
-func (c *committer) safeDeliver(cmdId int32, f func(int32) error) error {
+func (c *committer) safeDeliver(cmdId CommandId,
+	f func(CommandId) error) error {
 	i := c.delivered + 1
 	j, exists := c.instances[cmdId]
 	for ; exists && i <= j; i++ {
@@ -98,12 +98,12 @@ func (c *committer) safeDeliver(cmdId int32, f func(int32) error) error {
 	return nil
 }
 
-func (c *committer) wasDelivered(cmdId int32) bool {
+func (c *committer) wasDelivered(cmdId CommandId) bool {
 	i, exists := c.instances[cmdId]
 	return exists && i <= c.delivered
 }
 
-func (c *committer) undeliveredIter(f func(int32)) {
+func (c *committer) undeliveredIter(f func(CommandId)) {
 	i := c.delivered + 1
 	j := c.last
 	for ; i <= j; i++ {
@@ -112,7 +112,7 @@ func (c *committer) undeliveredIter(f func(int32)) {
 }
 
 type commandIdList struct {
-	cmdId    int32
+	cmdId    CommandId
 	index    int
 	next     *commandIdList
 	previous *commandIdList
@@ -132,10 +132,10 @@ type cmdPos struct {
 
 type committerBuilder struct {
 	headBlock *buildingBlock
-	cmdDesc   map[int32]*cmdPos
+	cmdDesc   map[CommandId]*cmdPos
 }
 
-func newIdList(cmdId int32) *commandIdList {
+func newIdList(cmdId CommandId) *commandIdList {
 	return &commandIdList{
 		cmdId:    cmdId,
 		index:    0,
@@ -191,7 +191,7 @@ func (l *commandIdList) before(l2 *commandIdList) {
 func newBuilder() *committerBuilder {
 	return &committerBuilder{
 		headBlock: nil,
-		cmdDesc:   make(map[int32]*cmdPos),
+		cmdDesc:   make(map[CommandId]*cmdPos),
 	}
 }
 
@@ -223,7 +223,7 @@ func (b *committerBuilder) join(b1, b2 *buildingBlock) {
 	}
 }
 
-func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepVector) {
+func (b *committerBuilder) adjust(cmdId CommandId, dep DepVector) {
 	var block *buildingBlock
 	var list *commandIdList
 
@@ -250,7 +250,7 @@ func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepVector) {
 		list = cmdInfo.list
 	}
 
-	dep.Iter(func(depCmdId int32) bool {
+	dep.Iter(func(depCmdId CommandId) bool {
 		depCmdInfo, exists := b.cmdDesc[depCmdId]
 
 		if exists {

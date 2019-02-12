@@ -9,7 +9,6 @@ import (
 	"state"
 	"sync"
 	"time"
-	"yagpaxosproto"
 )
 
 type Replica struct {
@@ -20,20 +19,20 @@ type Replica struct {
 	ballot  int32
 	cballot int32
 
-	phases map[int32]int
-	cmds   map[int32]state.Command
-	deps   map[int32]yagpaxosproto.DepVector
+	phases map[CommandId]int
+	cmds   map[CommandId]state.Command
+	deps   map[CommandId]DepVector
 
-	vectors map[state.Key]*yagpaxosproto.DepVector
+	vectors map[state.Key]*DepVector
 
 	committer *committer
 	gc        *gc
-	proposes  map[int32]*genericsmr.Propose
+	proposes  map[CommandId]*genericsmr.Propose
 
 	ignoreCommitted bool
 
-	fastAckQuorumSets      map[int32]*quorumSet
-	slowAckQuorumSets      map[int32]*quorumSet
+	fastAckQuorumSets      map[CommandId]*quorumSet
+	slowAckQuorumSets      map[CommandId]*quorumSet
 	newLeaderAckQuorumSets map[int32]*quorumSet
 	syncAckQuorumSets      map[int32]*quorumSet
 
@@ -89,18 +88,18 @@ func NewReplica(replicaId int, peerAddrs []string,
 		ballot:  0,
 		cballot: 0,
 
-		phases: make(map[int32]int),
-		cmds:   make(map[int32]state.Command),
-		deps:   make(map[int32]yagpaxosproto.DepVector),
+		phases: make(map[CommandId]int),
+		cmds:   make(map[CommandId]state.Command),
+		deps:   make(map[CommandId]DepVector),
 
-		vectors: make(map[state.Key]*yagpaxosproto.DepVector),
+		vectors: make(map[state.Key]*DepVector),
 
-		proposes: make(map[int32]*genericsmr.Propose),
+		proposes: make(map[CommandId]*genericsmr.Propose),
 
 		ignoreCommitted: ignoreCommitted,
 
-		fastAckQuorumSets:      make(map[int32]*quorumSet),
-		slowAckQuorumSets:      make(map[int32]*quorumSet),
+		fastAckQuorumSets:      make(map[CommandId]*quorumSet),
+		slowAckQuorumSets:      make(map[CommandId]*quorumSet),
 		newLeaderAckQuorumSets: make(map[int32]*quorumSet),
 		syncAckQuorumSets:      make(map[int32]*quorumSet),
 
@@ -126,7 +125,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		},
 	}
 	r.committer = newCommitter(&(r.Mutex), &(r.Shutdown))
-	r.gc = newGc(func(cmdId int32) {
+	r.gc = newGc(func(cmdId CommandId) {
 		_, exists := r.phases[cmdId]
 		if exists {
 			delete(r.phases, cmdId)
@@ -166,21 +165,21 @@ func NewReplica(replicaId int, peerAddrs []string,
 	}, &r.Mutex, &r.Shutdown)
 
 	r.cs.fastAckRPC =
-		r.RegisterRPC(new(yagpaxosproto.MFastAck), r.cs.fastAckChan)
+		r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
 	r.cs.commitRPC =
-		r.RegisterRPC(new(yagpaxosproto.MCommit), r.cs.commitChan)
+		r.RegisterRPC(new(MCommit), r.cs.commitChan)
 	r.cs.slowAckRPC =
-		r.RegisterRPC(new(yagpaxosproto.MSlowAck), r.cs.slowAckChan)
+		r.RegisterRPC(new(MSlowAck), r.cs.slowAckChan)
 	r.cs.newLeaderRPC =
-		r.RegisterRPC(new(yagpaxosproto.MNewLeader), r.cs.newLeaderChan)
+		r.RegisterRPC(new(MNewLeader), r.cs.newLeaderChan)
 	r.cs.newLeaderAckRPC =
-		r.RegisterRPC(new(yagpaxosproto.MNewLeaderAck), r.cs.newLeaderAckChan)
+		r.RegisterRPC(new(MNewLeaderAck), r.cs.newLeaderAckChan)
 	r.cs.syncRPC =
-		r.RegisterRPC(new(yagpaxosproto.MSync), r.cs.syncChan)
+		r.RegisterRPC(new(MSync), r.cs.syncChan)
 	r.cs.syncAckRPC =
-		r.RegisterRPC(new(yagpaxosproto.MSyncAck), r.cs.syncAckChan)
+		r.RegisterRPC(new(MSyncAck), r.cs.syncAckChan)
 	r.cs.collectRPC =
-		r.RegisterRPC(new(yagpaxosproto.MCollect), r.cs.collectChan)
+		r.RegisterRPC(new(MCollect), r.cs.collectChan)
 
 	go r.run()
 
@@ -213,28 +212,28 @@ func (r *Replica) run() {
 		case propose := <-r.ProposeChan:
 			go r.handlePropose(propose)
 		case m := <-r.cs.fastAckChan:
-			fastAck := m.(*yagpaxosproto.MFastAck)
+			fastAck := m.(*MFastAck)
 			go r.handleFastAck(fastAck)
 		case m := <-r.cs.commitChan:
-			commit := m.(*yagpaxosproto.MCommit)
+			commit := m.(*MCommit)
 			go r.handleCommit(commit)
 		case m := <-r.cs.slowAckChan:
-			slowAck := m.(*yagpaxosproto.MSlowAck)
+			slowAck := m.(*MSlowAck)
 			go r.handleSlowAck(slowAck)
 		case m := <-r.cs.newLeaderChan:
-			newLeader := m.(*yagpaxosproto.MNewLeader)
+			newLeader := m.(*MNewLeader)
 			go r.handleNewLeader(newLeader)
 		case m := <-r.cs.newLeaderAckChan:
-			newLeaderAck := m.(*yagpaxosproto.MNewLeaderAck)
+			newLeaderAck := m.(*MNewLeaderAck)
 			go r.handleNewLeaderAck(newLeaderAck)
 		case m := <-r.cs.syncChan:
-			sync := m.(*yagpaxosproto.MSync)
+			sync := m.(*MSync)
 			go r.handleSync(sync)
 		case m := <-r.cs.syncAckChan:
-			syncAck := m.(*yagpaxosproto.MSyncAck)
+			syncAck := m.(*MSyncAck)
 			go r.handleSyncAck(syncAck)
 		case m := <-r.cs.collectChan:
-			collect := m.(*yagpaxosproto.MCollect)
+			collect := m.(*MCollect)
 			go r.handleCollect(collect)
 		}
 	}
@@ -252,7 +251,10 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		return
 	}
 
-	cmdId := constructCommandId(msg.ClientId, msg.CommandId)
+	cmdId := CommandId{
+		ClientId: msg.ClientId,
+		SeqNum:   msg.CommandId,
+	}
 
 	_, exists := r.proposes[cmdId]
 	if exists {
@@ -268,13 +270,13 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		if exists {
 			r.deps[cmdId] = *dep
 		} else {
-			r.deps[cmdId] = *yagpaxosproto.EmptyVector()
+			r.deps[cmdId] = *EmptyVector()
 		}
 
-		r.add(&msg.Command, msg.ClientId, cmdId)
+		r.add(&msg.Command, cmdId)
 	}
 
-	fastAck := &yagpaxosproto.MFastAck{
+	fastAck := &MFastAck{
 		Replica:   r.Id,
 		Ballot:    r.ballot,
 		CommandId: cmdId,
@@ -291,7 +293,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	go r.handleFastAck(fastAck)
 }
 
-func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
+func (r *Replica) handleFastAck(msg *MFastAck) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -306,8 +308,8 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		slowQuorumSize := r.N/2 + 1
 
 		related := func(e1, e2 interface{}) bool {
-			fastAck1 := e1.(*yagpaxosproto.MFastAck)
-			fastAck2 := e2.(*yagpaxosproto.MFastAck)
+			fastAck1 := e1.(*MFastAck)
+			fastAck2 := e2.(*MFastAck)
 			return fastAck1.Dep.Equals(fastAck2.Dep)
 		}
 
@@ -347,13 +349,13 @@ func (r *Replica) handleFastAcks(q *quorum) {
 	if leaderMsg == nil {
 		return
 	}
-	leaderFastAck := leaderMsg.(*yagpaxosproto.MFastAck)
+	leaderFastAck := leaderMsg.(*MFastAck)
 	if r.ballot != leaderFastAck.Ballot {
 		return
 	}
 
 	if q.size >= fastQuorumSize {
-		commit := &yagpaxosproto.MCommit{
+		commit := &MCommit{
 			Replica:   r.Id,
 			Ballot:    r.ballot,
 			CommandId: leaderFastAck.CommandId,
@@ -374,7 +376,7 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			r.deps[leaderFastAck.CommandId] = leaderFastAck.Dep
 		}
 
-		slowAck := &yagpaxosproto.MSlowAck{
+		slowAck := &MSlowAck{
 			Replica:   r.Id,
 			Ballot:    leaderFastAck.Ballot,
 			CommandId: leaderFastAck.CommandId,
@@ -386,13 +388,13 @@ func (r *Replica) handleFastAcks(q *quorum) {
 	}
 }
 
-func (r *Replica) handleCollect(msg *yagpaxosproto.MCollect) {
+func (r *Replica) handleCollect(msg *MCollect) {
 	r.Lock()
 	defer r.Unlock()
 	r.gc.collect(msg.CommandId, msg.Replica, r.N)
 }
 
-func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
+func (r *Replica) handleCommit(msg *MCommit) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -412,7 +414,7 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	}
 
 	if r.committer.wasDelivered(msg.CommandId) {
-		collect := &yagpaxosproto.MCollect{
+		collect := &MCollect{
 			Replica:   r.Id,
 			CommandId: msg.CommandId,
 		}
@@ -421,7 +423,7 @@ func (r *Replica) handleCommit(msg *yagpaxosproto.MCommit) {
 	}
 }
 
-func (r *Replica) handleSlowAck(msg *yagpaxosproto.MSlowAck) {
+func (r *Replica) handleSlowAck(msg *MSlowAck) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -467,12 +469,12 @@ func (r *Replica) handleSlowAcks(q *quorum) {
 		return
 	}
 
-	someSlowAck := q.elements[0].(*yagpaxosproto.MSlowAck)
+	someSlowAck := q.elements[0].(*MSlowAck)
 	if r.ballot != someSlowAck.Ballot {
 		return
 	}
 
-	commit := &yagpaxosproto.MCommit{
+	commit := &MCommit{
 		Replica:   r.Id,
 		Ballot:    r.ballot,
 		CommandId: someSlowAck.CommandId,
@@ -483,7 +485,7 @@ func (r *Replica) handleSlowAcks(q *quorum) {
 	go r.handleCommit(commit)
 }
 
-func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
+func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -496,7 +498,7 @@ func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
 	r.status = PREPARING
 	r.ballot = msg.Ballot
 
-	newLeaderAck := &yagpaxosproto.MNewLeaderAck{
+	newLeaderAck := &MNewLeaderAck{
 		Replica: r.Id,
 		Ballot:  r.ballot,
 		Cballot: r.cballot,
@@ -516,7 +518,7 @@ func (r *Replica) handleNewLeader(msg *yagpaxosproto.MNewLeader) {
 	}
 }
 
-func (r *Replica) handleNewLeaderAck(msg *yagpaxosproto.MNewLeaderAck) {
+func (r *Replica) handleNewLeaderAck(msg *MNewLeaderAck) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -570,7 +572,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		return
 	}
 
-	someMsg := q.elements[0].(*yagpaxosproto.MNewLeaderAck)
+	someMsg := q.elements[0].(*MNewLeaderAck)
 	if r.ballot != someMsg.Ballot {
 		return
 	}
@@ -578,17 +580,17 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	maxCballot := int32(0)
 	for i := 0; i < q.size; i++ {
 		e := q.elements[i]
-		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
+		newLeaderAck := e.(*MNewLeaderAck)
 		if newLeaderAck.Cballot > maxCballot {
 			maxCballot = newLeaderAck.Cballot
 		}
 	}
 
-	moreThanFourth := func(cmdId int32) *yagpaxosproto.MNewLeaderAck {
+	moreThanFourth := func(cmdId CommandId)  *MNewLeaderAck {
 		n := 1
 		for id0 := 0; id0 < q.size; id0++ {
 			e0 := q.elements[id0]
-			newLeaderAck0 := e0.(*yagpaxosproto.MNewLeaderAck)
+			newLeaderAck0 := e0.(*MNewLeaderAck)
 			d := newLeaderAck0.Deps[cmdId]
 			for id := 0; id < q.size; id++ {
 				e := q.elements[id]
@@ -597,7 +599,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 					continue
 				}
 
-				newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
+				newLeaderAck := e.(*MNewLeaderAck)
 				d2 := newLeaderAck.Deps[cmdId]
 
 				if d.Equals(d2) {
@@ -612,18 +614,18 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		return nil
 	}
 
-	r.phases = make(map[int32]int)
-	r.cmds = make(map[int32]state.Command)
-	r.deps = make(map[int32]yagpaxosproto.DepVector)
-	r.vectors = make(map[state.Key]*yagpaxosproto.DepVector)
+	r.phases = make(map[CommandId]int)
+	r.cmds = make(map[CommandId]state.Command)
+	r.deps = make(map[CommandId]DepVector)
+	r.vectors = make(map[state.Key]*DepVector)
 	// TODO: reset committer, gc, and propose ?
 
-	acceptedCmds := make(map[int32]struct{})
+	acceptedCmds := make(map[CommandId]struct{})
 	builder := newBuilder()
 
 	for i := 0; i < q.size; i++ {
 		e := q.elements[i]
-		newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
+		newLeaderAck := e.(*MNewLeaderAck)
 		for cmdId, p := range newLeaderAck.Phases {
 			_, exists := acceptedCmds[cmdId]
 			if exists {
@@ -653,9 +655,9 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		}
 	}
 
-	nopCmds := make(map[int32]struct{})
+	nopCmds := make(map[CommandId]struct{})
 	for _, dep := range r.deps {
-		dep.Iter(func(depCmdId int32) bool {
+		dep.Iter(func(depCmdId CommandId) bool {
 			p, exists := r.phases[depCmdId]
 			if !exists || p == START {
 				r.phases[depCmdId] = SLOW_ACCEPT
@@ -666,14 +668,14 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		})
 	}
 	for nopId := range nopCmds {
-		r.deps[nopId] = *yagpaxosproto.EmptyVector()
+		r.deps[nopId] = *EmptyVector()
 	}
 
 	r.cballot = r.ballot
 	r.committer = builder.buildCommitterFrom(r.committer,
 		&(r.Mutex), &(r.Shutdown))
 
-	sync := &yagpaxosproto.MSync{
+	sync := &MSync{
 		Replica: r.Id,
 		Ballot:  r.ballot,
 		Phases:  r.phases,
@@ -687,7 +689,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	}()
 }
 
-func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
+func (r *Replica) handleSync(msg *MSync) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -711,17 +713,17 @@ func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
 	r.committer = builder.buildCommitterFrom(r.committer,
 		&(r.Mutex), &(r.Shutdown))
 
-	r.vectors = make(map[state.Key]*yagpaxosproto.DepVector)
+	r.vectors = make(map[state.Key]*DepVector)
 	r.updateVectors()
 
-	syncAck := &yagpaxosproto.MSyncAck{
+	syncAck := &MSyncAck{
 		Replica: r.Id,
 		Ballot:  msg.Ballot,
 	}
 	go r.SendMsg(leader(msg.Ballot, r.N), r.cs.syncAckRPC, syncAck)
 }
 
-func (r *Replica) handleSyncAck(msg *yagpaxosproto.MSyncAck) {
+func (r *Replica) handleSyncAck(msg *MSyncAck) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -767,7 +769,7 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 		return
 	}
 
-	someMsg := q.elements[0].(*yagpaxosproto.MSyncAck)
+	someMsg := q.elements[0].(*MSyncAck)
 	if r.ballot != someMsg.Ballot {
 		return
 	}
@@ -778,7 +780,7 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 			continue
 		}
 
-		commit := &yagpaxosproto.MCommit{
+		commit := &MCommit{
 			Replica:   r.Id,
 			Ballot:    r.ballot,
 			CommandId: cmdId,
@@ -809,7 +811,7 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 		newBallot += int32(r.N)
 	}
 
-	newLeader := &yagpaxosproto.MNewLeader{
+	newLeader := &MNewLeader{
 		Replica: r.Id,
 		Ballot:  newBallot,
 	}
@@ -819,7 +821,7 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 	return nil
 }
 
-func (r *Replica) executeAndReply(cmdId int32) error {
+func (r *Replica) executeAndReply(cmdId CommandId) error {
 	if r.phases[cmdId] != COMMIT {
 		return errors.New("command has not yet been committed")
 	}
@@ -868,25 +870,25 @@ func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
 	}
 }
 
-func (r *Replica) add(cmd *state.Command, clientId, cmdId int32) {
+func (r *Replica) add(cmd *state.Command, cmdId CommandId) {
 	dep, exists := r.vectors[cmd.K]
 	if !exists {
 		if cmd.Op != state.PUT {
 			return
 		}
-		dep = &yagpaxosproto.DepVector{
+		dep = &DepVector{
 			Size: 0,
-			Vect: make([]yagpaxosproto.ClientInfo, 10),
+			Vect: make([]CommandId, 10),
 		}
 		r.vectors[cmd.K] = dep
 	}
 
-	dep.Add(cmd, clientId, cmdId)
+	dep.Add(cmd, cmdId)
 }
 
 func (r *Replica) updateVectors() {
-	lastNonEmpty := make(map[state.Key]*yagpaxosproto.DepVector)
-	r.committer.undeliveredIter(func(cmdId int32) {
+	lastNonEmpty := make(map[state.Key]*DepVector)
+	r.committer.undeliveredIter(func(cmdId CommandId) {
 		key := r.cmds[cmdId].K
 		dep := r.deps[cmdId]
 		if !dep.IsEmpty() {
@@ -925,9 +927,4 @@ func leader(ballot int32, repNum int) int32 {
 
 func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
-}
-
-// Cantor pairing
-func constructCommandId(clientId, seqNum int32) int32 {
-	return (clientId+seqNum)*(clientId+seqNum+1)/2 + seqNum
 }

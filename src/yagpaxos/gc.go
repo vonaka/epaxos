@@ -6,17 +6,17 @@ const WAIT_FOR = 800
 
 type gc struct {
 	sync.Mutex
-	clean  func(int32)
-	cmds   map[int32]map[int32]struct{}
-	trash  map[int32]struct{}
+	clean  func(CommandId)
+	cmds   map[CommandId]map[int32]struct{}
+	trash  map[CommandId]struct{}
 	wakeup chan struct{}
 }
 
-func newGc(clean func(int32), mutex *sync.Mutex, shutdown *bool) *gc {
+func newGc(clean func(CommandId), mutex *sync.Mutex, shutdown *bool) *gc {
 	g := gc{
 		clean:  clean,
-		cmds:   make(map[int32]map[int32]struct{}),
-		trash:  make(map[int32]struct{}, WAIT_FOR),
+		cmds:   make(map[CommandId]map[int32]struct{}),
+		trash:  make(map[CommandId]struct{}, WAIT_FOR),
 		wakeup: make(chan struct{}, 1),
 	}
 
@@ -37,7 +37,7 @@ func newGc(clean func(int32), mutex *sync.Mutex, shutdown *bool) *gc {
 	return &g
 }
 
-func (g *gc) collect(cmdId, replicaId int32, totalReplicaNum int) {
+func (g *gc) collect(cmdId CommandId, replicaId int32, totalReplicaNum int) {
 	rs, exists := g.cmds[cmdId]
 	if !exists {
 		g.cmds[cmdId] = make(map[int32]struct{})

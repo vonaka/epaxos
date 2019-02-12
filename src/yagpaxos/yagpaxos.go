@@ -586,7 +586,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		}
 	}
 
-	moreThanFourth := func(cmdId CommandId)  *MNewLeaderAck {
+	moreThanFourth := func(cmdId CommandId) *MNewLeaderAck {
 		n := 1
 		for id0 := 0; id0 < q.size; id0++ {
 			e0 := q.elements[id0]

@@ -86,7 +86,7 @@ func (c *committer) safeDeliver(cmdId int32, f func(int32) error) error {
 	for ; exists && i <= j; i++ {
 		_, exists := c.cmdIds[i]
 		if !exists {
-			return errors.New("some dependency is no commited yet")
+			return errors.New("some dependency is not commited yet")
 		} else {
 			if f(c.cmdIds[i]) != nil {
 				return nil
@@ -223,7 +223,7 @@ func (b *committerBuilder) join(b1, b2 *buildingBlock) {
 	}
 }
 
-func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepSet) {
+func (b *committerBuilder) adjust(cmdId int32, dep yagpaxosproto.DepVector) {
 	var block *buildingBlock
 	var list *commandIdList
 

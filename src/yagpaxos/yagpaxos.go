@@ -22,7 +22,9 @@ type Replica struct {
 
 	phases map[int32]int
 	cmds   map[int32]state.Command
-	deps   map[int32]yagpaxosproto.DepSet
+	deps   map[int32]yagpaxosproto.DepVector
+
+	vectors map[state.Key]*yagpaxosproto.DepVector
 
 	committer *committer
 	gc        *gc
@@ -89,7 +91,9 @@ func NewReplica(replicaId int, peerAddrs []string,
 
 		phases: make(map[int32]int),
 		cmds:   make(map[int32]state.Command),
-		deps:   make(map[int32]yagpaxosproto.DepSet),
+		deps:   make(map[int32]yagpaxosproto.DepVector),
+
+		vectors: make(map[state.Key]*yagpaxosproto.DepVector),
 
 		proposes: make(map[int32]*genericsmr.Propose),
 
@@ -258,30 +262,16 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 
 	_, exists = r.cmds[cmdId]
 	if !exists {
-		deps := yagpaxosproto.NewDepSet()
-
-		if r.ignoreCommitted {
-			r.committer.undeliveredIter(func(cid int32) {
-				if cid != cmdId &&
-					r.phases[cid] != START &&
-					r.phases[cid] != COMMIT &&
-					inConflict(r.cmds[cid], msg.Command) {
-					deps.Add(cid)
-				}
-			})
-		} else {
-			for cid, p := range r.phases {
-				if cid != cmdId && p != START &&
-					inConflict(r.cmds[cid], msg.Command) {
-					deps.Add(cid)
-				}
-			}
-		}
-
 		r.phases[cmdId] = FAST_ACCEPT
 		r.cmds[cmdId] = msg.Command
-		r.deps[cmdId] = deps
+		dep, exists := r.vectors[msg.Command.K]
+		if exists {
+			r.deps[cmdId] = *dep
+		} else {
+			r.deps[cmdId] = *yagpaxosproto.EmptyVector()
+		}
 
+		r.add(&msg.Command, msg.ClientId, cmdId)
 	}
 
 	fastAck := &yagpaxosproto.MFastAck{
@@ -318,11 +308,7 @@ func (r *Replica) handleFastAck(msg *yagpaxosproto.MFastAck) {
 		related := func(e1, e2 interface{}) bool {
 			fastAck1 := e1.(*yagpaxosproto.MFastAck)
 			fastAck2 := e2.(*yagpaxosproto.MFastAck)
-			return fastAck1.Dep.SmartEquals(fastAck2.Dep,
-				func(cmdId int32, _ bool) bool {
-					p, exists := r.phases[cmdId]
-					return exists && (p == COMMIT || p == DELIVER)
-				})
+			return fastAck1.Dep.Equals(fastAck2.Dep)
 		}
 
 		strongTest := func(q *quorum) bool {
@@ -614,15 +600,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 				newLeaderAck := e.(*yagpaxosproto.MNewLeaderAck)
 				d2 := newLeaderAck.Deps[cmdId]
 
-				if d.SmartEquals(d2, func(cmdId int32, dContains bool) bool {
-					if dContains {
-						p, exists := newLeaderAck0.Phases[cmdId]
-						return exists && (p == COMMIT || p == DELIVER)
-					} else {
-						p, exists := newLeaderAck.Phases[cmdId]
-						return exists && (p == COMMIT || p == DELIVER)
-					}
-				}) {
+				if d.Equals(d2) {
 					n++
 				}
 
@@ -636,7 +614,8 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 
 	r.phases = make(map[int32]int)
 	r.cmds = make(map[int32]state.Command)
-	r.deps = make(map[int32]yagpaxosproto.DepSet)
+	r.deps = make(map[int32]yagpaxosproto.DepVector)
+	r.vectors = make(map[state.Key]*yagpaxosproto.DepVector)
 	// TODO: reset committer, gc, and propose ?
 
 	acceptedCmds := make(map[int32]struct{})
@@ -687,7 +666,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		})
 	}
 	for nopId := range nopCmds {
-		r.deps[nopId] = yagpaxosproto.NilDepSet()
+		r.deps[nopId] = *yagpaxosproto.EmptyVector()
 	}
 
 	r.cballot = r.ballot
@@ -731,6 +710,9 @@ func (r *Replica) handleSync(msg *yagpaxosproto.MSync) {
 	}
 	r.committer = builder.buildCommitterFrom(r.committer,
 		&(r.Mutex), &(r.Shutdown))
+
+	r.vectors = make(map[state.Key]*yagpaxosproto.DepVector)
+	r.updateVectors()
 
 	syncAck := &yagpaxosproto.MSyncAck{
 		Replica: r.Id,
@@ -883,6 +865,40 @@ func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
 			r.M.Lock()
 		}
 		r.M.Unlock()
+	}
+}
+
+func (r *Replica) add(cmd *state.Command, clientId, cmdId int32) {
+	dep, exists := r.vectors[cmd.K]
+	if !exists {
+		if cmd.Op != state.PUT {
+			return
+		}
+		dep = &yagpaxosproto.DepVector{
+			Size: 0,
+			Vect: make([]yagpaxosproto.ClientInfo, 10),
+		}
+		r.vectors[cmd.K] = dep
+	}
+
+	dep.Add(cmd, clientId, cmdId)
+}
+
+func (r *Replica) updateVectors() {
+	lastNonEmpty := make(map[state.Key]*yagpaxosproto.DepVector)
+	r.committer.undeliveredIter(func(cmdId int32) {
+		key := r.cmds[cmdId].K
+		dep := r.deps[cmdId]
+		if !dep.IsEmpty() {
+			lastNonEmpty[key] = &dep
+		}
+		r.vectors[key] = &dep
+	})
+
+	for key, dep := range lastNonEmpty {
+		if r.vectors[key].IsEmpty() {
+			r.vectors[key] = dep
+		}
 	}
 }
 

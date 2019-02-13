@@ -792,6 +792,7 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 	}
 
 	r.clean()
+	r.updateVectors()
 }
 
 func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,

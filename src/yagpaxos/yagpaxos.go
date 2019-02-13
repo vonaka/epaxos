@@ -23,7 +23,7 @@ type Replica struct {
 	cmds   map[CommandId]state.Command
 	deps   map[CommandId]DepVector
 
-	vectors map[state.Key]*DepVector
+	vectors map[state.Key]*superDepVector
 
 	committer *committer
 	gc        *gc
@@ -92,7 +92,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cmds:   make(map[CommandId]state.Command),
 		deps:   make(map[CommandId]DepVector),
 
-		vectors: make(map[state.Key]*DepVector),
+		vectors: make(map[state.Key]*superDepVector),
 
 		proposes: make(map[CommandId]*genericsmr.Propose),
 
@@ -268,7 +268,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		r.cmds[cmdId] = msg.Command
 		dep, exists := r.vectors[msg.Command.K]
 		if exists {
-			r.deps[cmdId] = *dep
+			r.deps[cmdId] = dep.vector
 		} else {
 			r.deps[cmdId] = *EmptyVector()
 		}
@@ -617,7 +617,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	r.phases = make(map[CommandId]int)
 	r.cmds = make(map[CommandId]state.Command)
 	r.deps = make(map[CommandId]DepVector)
-	r.vectors = make(map[state.Key]*DepVector)
+	r.vectors = make(map[state.Key]*superDepVector)
 	// TODO: reset committer, gc, and propose ?
 
 	acceptedCmds := make(map[CommandId]struct{})
@@ -713,7 +713,7 @@ func (r *Replica) handleSync(msg *MSync) {
 	r.committer = builder.buildCommitterFrom(r.committer,
 		&(r.Mutex), &(r.Shutdown))
 
-	r.vectors = make(map[state.Key]*DepVector)
+	r.vectors = make(map[state.Key]*superDepVector)
 	r.updateVectors()
 
 	syncAck := &MSyncAck{
@@ -877,32 +877,18 @@ func (r *Replica) add(cmd *state.Command, cmdId CommandId) {
 		if cmd.Op != state.PUT {
 			return
 		}
-		dep = &DepVector{
-			Size: 0,
-			Vect: make([]CommandId, 10),
-		}
+		dep = newSuperDepVector()
 		r.vectors[cmd.K] = dep
 	}
 
-	dep.Add(cmd, cmdId)
+	dep.add(cmd, cmdId)
 }
 
 func (r *Replica) updateVectors() {
-	lastNonEmpty := make(map[state.Key]*DepVector)
 	r.committer.undeliveredIter(func(cmdId CommandId) {
-		key := r.cmds[cmdId].K
-		dep := r.deps[cmdId]
-		if !dep.IsEmpty() {
-			lastNonEmpty[key] = &dep
-		}
-		r.vectors[key] = &dep
+		cmd := r.cmds[cmdId]
+		r.add(&cmd, cmdId)
 	})
-
-	for key, dep := range lastNonEmpty {
-		if r.vectors[key].IsEmpty() {
-			r.vectors[key] = dep
-		}
-	}
 }
 
 func (r *Replica) clean() {
@@ -928,4 +914,39 @@ func leader(ballot int32, repNum int) int32 {
 
 func inConflict(c1, c2 state.Command) bool {
 	return state.Conflict(&c1, &c2)
+}
+
+type superDepVector struct {
+	vector         DepVector
+	commandIndices map[int32]int
+}
+
+func newSuperDepVector() *superDepVector {
+	return &superDepVector{
+		vector: DepVector{
+			Size: 0,
+			Vect: make([]CommandId, 10),
+		},
+		commandIndices: make(map[int32]int, 10),
+	}
+}
+
+func (sdv *superDepVector) add(cmd *state.Command, cmdId CommandId) {
+	if cmd.Op != state.PUT {
+		return
+	}
+
+	cmdIndex, exists := sdv.commandIndices[cmdId.ClientId]
+	vector := &(sdv.vector)
+	if exists {
+		vector.Vect[cmdIndex] = cmdId
+	} else {
+		if vector.Size < len(vector.Vect) {
+			vector.Vect[vector.Size] = cmdId
+		} else {
+			vector.Vect = append(vector.Vect, cmdId)
+		}
+		sdv.commandIndices[cmdId.ClientId] = vector.Size
+		vector.Size++
+	}
 }

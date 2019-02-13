@@ -183,19 +183,29 @@ func (dv1 DepVector) Equals(dv2 DepVector) bool {
 		return false
 	}
 
+	seen1 := make(map[CommandId]struct{})
+	seen2 := make(map[CommandId]struct{})
 	for i := 0; i < dv1.Size; i++ {
-		cmdId1 := dv1.Vect[i]
-		cmdIndex, exists := dv2.CommandIndex(cmdId1.ClientId)
-		if !exists {
-			return false
+		if dv1.Vect[i] == dv2.Vect[i] {
+			continue
 		}
-		cmdId2 := dv2.Vect[cmdIndex]
-		if cmdId1.SeqNum != cmdId2.SeqNum {
-			return false
+
+		_, exists := seen2[dv1.Vect[i]]
+		if exists {
+			delete(seen2, dv1.Vect[i])
+		} else {
+			seen1[dv1.Vect[i]] = struct{}{}
+		}
+
+		_, exists = seen1[dv2.Vect[i]]
+		if exists {
+			delete(seen1, dv2.Vect[i])
+		} else {
+			seen2[dv2.Vect[i]] = struct{}{}
 		}
 	}
 
-	return true
+	return len(seen1) == len(seen2) && len(seen1) == 0
 }
 
 func (dv DepVector) Iter(f func(cmdId CommandId) bool) bool {

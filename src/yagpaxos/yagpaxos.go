@@ -313,7 +313,12 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 			return fastAck1.Dep.Equals(fastAck2.Dep)
 		}
 
+		totalNum := 0
 		strongTest := func(q *quorum) bool {
+			totalNum++
+			if q.size < fastQuorumSize && totalNum >= fastQuorumSize {
+				return qs.weakTest(q)
+			}
 			return q.size >= fastQuorumSize
 		}
 

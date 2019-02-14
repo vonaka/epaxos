@@ -314,9 +314,11 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 		}
 
 		totalNum := 0
+		maxDiff := r.N - fastQuorumSize
 		strongTest := func(q *quorum) bool {
 			totalNum++
-			if q.size < fastQuorumSize && totalNum >= fastQuorumSize {
+			if q.size < fastQuorumSize && totalNum > maxDiff {
+				qs.afterHours = true
 				return qs.weakTest(q)
 			}
 			return q.size >= fastQuorumSize

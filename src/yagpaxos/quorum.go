@@ -70,6 +70,9 @@ func newQuorumSet(related func(interface{}, interface{}) bool,
 		time.Sleep(waitFor)
 		qs.Lock()
 		defer qs.Unlock()
+		if qs.afterHours {
+			return
+		}
 		qs.afterHours = true
 		if qs.weakTest(qs.mainQuorum) {
 			go qs.handler(qs.mainQuorum)

@@ -310,7 +310,7 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 		related := func(e1, e2 interface{}) bool {
 			fastAck1 := e1.(*MFastAck)
 			fastAck2 := e2.(*MFastAck)
-			return fastAck1.Dep.Equals(fastAck2.Dep)
+			return fastAck1.Dep.Equals(&(fastAck2.Dep))
 		}
 
 		totalNum := 0
@@ -609,7 +609,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 				newLeaderAck := e.(*MNewLeaderAck)
 				d2 := newLeaderAck.Deps[cmdId]
 
-				if d.Equals(d2) {
+				if d.Equals(&d2) {
 					n++
 				}
 

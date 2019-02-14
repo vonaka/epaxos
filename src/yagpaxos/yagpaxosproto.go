@@ -178,7 +178,7 @@ func (dv *DepVector) Add(cmd *state.Command, cmdId CommandId) {
 	}
 }
 
-func (dv1 DepVector) Equals(dv2 DepVector) bool {
+func (dv1 *DepVector) Equals(dv2 *DepVector) bool {
 	if dv1.Size != dv2.Size {
 		return false
 	}
@@ -208,7 +208,7 @@ func (dv1 DepVector) Equals(dv2 DepVector) bool {
 	return len(seen1) == len(seen2) && len(seen1) == 0
 }
 
-func (dv DepVector) Iter(f func(cmdId CommandId) bool) bool {
+func (dv *DepVector) Iter(f func(cmdId CommandId) bool) bool {
 	for i := 0; i < dv.Size; i++ {
 		if f(dv.Vect[i]) {
 			return true

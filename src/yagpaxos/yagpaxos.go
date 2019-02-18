@@ -831,14 +831,8 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 		return
 	}
 
-	maxId := int32(0)
-
 	r.status = LEADER
 	for cmdId, desc := range r.cmdDescs {
-		if maxId < cmdId.SeqNum {
-			maxId = cmdId.SeqNum
-		}
-
 		if desc.phase == COMMIT {
 			continue
 		}

@@ -19,24 +19,28 @@ type Replica struct {
 	ballot  int32
 	cballot int32
 
-	phases map[CommandId]int
-	cmds   map[CommandId]state.Command
-	deps   map[CommandId]DepVector
-
-	vectors map[state.Key]*superDepVector
+	cmdDescs map[CommandId]*CommandDesc
+	vectors  map[state.Key]*superDepVector
 
 	committer *committer
 	gc        *gc
-	proposes  map[CommandId]*genericsmr.Propose
 
 	ignoreCommitted bool
 
-	fastAckQuorumSets      map[CommandId]*quorumSet
-	slowAckQuorumSets      map[CommandId]*quorumSet
 	newLeaderAckQuorumSets map[int32]*quorumSet
 	syncAckQuorumSets      map[int32]*quorumSet
 
 	cs CommunicationSupply
+}
+
+type CommandDesc struct {
+	phase   int
+	cmd     state.Command
+	dep     DepVector
+	propose *genericsmr.Propose
+
+	fastAckQuorumSet *quorumSet
+	slowAckQuorumSet *quorumSet
 }
 
 // status
@@ -88,18 +92,11 @@ func NewReplica(replicaId int, peerAddrs []string,
 		ballot:  0,
 		cballot: 0,
 
-		phases: make(map[CommandId]int),
-		cmds:   make(map[CommandId]state.Command),
-		deps:   make(map[CommandId]DepVector),
-
-		vectors: make(map[state.Key]*superDepVector),
-
-		proposes: make(map[CommandId]*genericsmr.Propose),
+		cmdDescs: make(map[CommandId]*CommandDesc),
+		vectors:  make(map[state.Key]*superDepVector),
 
 		ignoreCommitted: ignoreCommitted,
 
-		fastAckQuorumSets:      make(map[CommandId]*quorumSet),
-		slowAckQuorumSets:      make(map[CommandId]*quorumSet),
 		newLeaderAckQuorumSets: make(map[int32]*quorumSet),
 		syncAckQuorumSets:      make(map[int32]*quorumSet),
 
@@ -126,29 +123,9 @@ func NewReplica(replicaId int, peerAddrs []string,
 	}
 	r.committer = newCommitter(&(r.Mutex), &(r.Shutdown))
 	r.gc = newGc(func(cmdId CommandId) {
-		_, exists := r.phases[cmdId]
+		_, exists := r.cmdDescs[cmdId]
 		if exists {
-			delete(r.phases, cmdId)
-		}
-		_, exists = r.cmds[cmdId]
-		if exists {
-			delete(r.cmds, cmdId)
-		}
-		_, exists = r.deps[cmdId]
-		if exists {
-			delete(r.deps, cmdId)
-		}
-		_, exists = r.proposes[cmdId]
-		if exists {
-			delete(r.proposes, cmdId)
-		}
-		_, exists = r.fastAckQuorumSets[cmdId]
-		if exists {
-			delete(r.fastAckQuorumSets, cmdId)
-		}
-		_, exists = r.slowAckQuorumSets[cmdId]
-		if exists {
-			delete(r.slowAckQuorumSets, cmdId)
+			delete(r.cmdDescs, cmdId)
 		}
 
 		/* Wrong! Keys are ballots!
@@ -256,32 +233,35 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		SeqNum:   msg.CommandId,
 	}
 
-	_, exists := r.proposes[cmdId]
-	if exists {
+	desc, exists := r.cmdDescs[cmdId]
+	if !exists {
+		desc = &CommandDesc{}
+		r.cmdDescs[cmdId] = desc
+	}
+	if desc.propose != nil {
 		return
 	}
-	r.proposes[cmdId] = msg
 
-	_, exists = r.cmds[cmdId]
-	if !exists {
-		r.phases[cmdId] = FAST_ACCEPT
-		r.cmds[cmdId] = msg.Command
+	if desc.phase < SLOW_ACCEPT {
+		desc.phase = FAST_ACCEPT
+		desc.cmd = msg.Command
 		dep, exists := r.vectors[msg.Command.K]
 		if exists {
-			r.deps[cmdId] = dep.vector
+			desc.dep = dep.vector
 		} else {
-			r.deps[cmdId] = *EmptyVector()
+			desc.dep = *EmptyVector()
 		}
-
 		r.add(&msg.Command, cmdId)
 	}
+
+	desc.propose = msg
 
 	fastAck := &MFastAck{
 		Replica:   r.Id,
 		Ballot:    r.ballot,
 		CommandId: cmdId,
 		Command:   msg.Command,
-		Dep:       r.deps[cmdId],
+		Dep:       desc.dep,
 	}
 	if r.status == LEADER {
 		r.committer.add(cmdId)
@@ -301,9 +281,13 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 		return
 	}
 
-	qs, exists := r.fastAckQuorumSets[msg.CommandId]
-
+	desc, exists := r.cmdDescs[msg.CommandId]
 	if !exists {
+		desc = &CommandDesc{}
+		r.cmdDescs[msg.CommandId] = desc
+	}
+
+	if desc.fastAckQuorumSet == nil {
 		fastQuorumSize := 3*r.N/4 + 1
 		slowQuorumSize := r.N/2 + 1
 
@@ -314,12 +298,16 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 		}
 
 		totalNum := 0
-		maxDiff := r.N - fastQuorumSize
+		rest := r.N - fastQuorumSize
 		strongTest := func(q *quorum) bool {
 			totalNum++
-			if q.size < fastQuorumSize && totalNum > maxDiff {
+			qs := desc.fastAckQuorumSet
+			if q.size < fastQuorumSize && totalNum > rest {
 				qs.afterHours = true
-				return qs.weakTest(q)
+				if qs.weakTest(qs.mainQuorum) {
+					go qs.handler(qs.mainQuorum)
+				}
+				return false
 			}
 			return q.size >= fastQuorumSize
 		}
@@ -330,16 +318,15 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 
 		waitFor := time.Duration(r.N+1) * r.cs.maxLatency // FIXME
 
-		qs = newQuorumSet(related, strongTest,
+		desc.fastAckQuorumSet = newQuorumSet(related, strongTest,
 			weakTest, r.handleFastAcks, waitFor)
-		r.fastAckQuorumSets[msg.CommandId] = qs
 	}
 
 	fromLeader := msg.Replica == leader(r.ballot, r.N)
 	if fromLeader && r.status == FOLLOWER {
 		r.committer.addTo(msg.CommandId, msg.AcceptId)
 	}
-	qs.add(msg, fromLeader)
+	desc.fastAckQuorumSet.add(msg, fromLeader)
 }
 
 func (r *Replica) handleFastAcks(q *quorum) {
@@ -377,10 +364,15 @@ func (r *Replica) handleFastAcks(q *quorum) {
 		}
 		go r.handleCommit(commit)
 	} else {
-		r.phases[leaderFastAck.CommandId] = SLOW_ACCEPT
+		desc, exists := r.cmdDescs[leaderFastAck.CommandId]
+		if !exists {
+			desc = &CommandDesc{}
+			r.cmdDescs[leaderFastAck.CommandId] = desc
+		}
+		desc.phase = SLOW_ACCEPT
 		if r.status == FOLLOWER {
-			r.cmds[leaderFastAck.CommandId] = leaderFastAck.Command
-			r.deps[leaderFastAck.CommandId] = leaderFastAck.Dep
+			desc.cmd = leaderFastAck.Command
+			desc.dep = leaderFastAck.Dep
 		}
 
 		slowAck := &MSlowAck{
@@ -405,14 +397,20 @@ func (r *Replica) handleCommit(msg *MCommit) {
 	r.Lock()
 	defer r.Unlock()
 
+	desc, exists := r.cmdDescs[msg.CommandId]
+	if !exists {
+		desc = &CommandDesc{}
+		r.cmdDescs[msg.CommandId] = desc
+	}
+
 	if (r.status != LEADER && r.status != FOLLOWER) || msg.Ballot > r.ballot ||
-		r.phases[msg.CommandId] == DELIVER {
+		desc.phase == DELIVER {
 		return
 	}
 
-	r.phases[msg.CommandId] = COMMIT
-	r.cmds[msg.CommandId] = msg.Command
-	r.deps[msg.CommandId] = msg.Dep
+	desc.phase = COMMIT
+	desc.cmd = msg.Command
+	desc.dep = msg.Dep
 
 	if r.status == LEADER {
 		r.committer.deliver(msg.CommandId, r.executeAndReply)
@@ -438,8 +436,13 @@ func (r *Replica) handleSlowAck(msg *MSlowAck) {
 		return
 	}
 
-	qs, exists := r.slowAckQuorumSets[msg.CommandId]
+	desc, exists := r.cmdDescs[msg.CommandId]
 	if !exists {
+		desc = &CommandDesc{}
+		r.cmdDescs[msg.CommandId] = desc
+	}
+
+	if desc.slowAckQuorumSet == nil  {
 		slowQuorumSize := r.N/2 + 1
 
 		related := func(e1, e2 interface{}) bool {
@@ -454,12 +457,11 @@ func (r *Replica) handleSlowAck(msg *MSlowAck) {
 
 		waitFor := time.Duration(0)
 
-		qs = newQuorumSet(related, strongTest,
+		desc.slowAckQuorumSet = newQuorumSet(related, strongTest,
 			weakTest, r.handleSlowAcks, waitFor)
-		r.slowAckQuorumSets[msg.CommandId] = qs
 	}
 
-	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
+	desc.slowAckQuorumSet.add(msg, msg.Replica == leader(r.ballot, r.N))
 }
 
 func (r *Replica) handleSlowAcks(q *quorum) {
@@ -505,13 +507,24 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	r.status = PREPARING
 	r.ballot = msg.Ballot
 
+	// TODO: get rid of it
+	var phases map[CommandId]int
+	var cmds   map[CommandId]state.Command
+	var deps   map[CommandId]DepVector
+
+	for cmdId, desc := range r.cmdDescs {
+		phases[cmdId] = desc.phase
+		cmds[cmdId] = desc.cmd
+		deps[cmdId] = desc.dep
+	}
+
 	newLeaderAck := &MNewLeaderAck{
 		Replica: r.Id,
 		Ballot:  r.ballot,
 		Cballot: r.cballot,
-		Phases:  r.phases,
-		Cmds:    r.cmds,
-		Deps:    r.deps,
+		Phases:  phases,
+		Cmds:    cmds,
+		Deps:    deps,
 	}
 
 	if l := leader(r.ballot, r.N); l == r.Id {
@@ -621,9 +634,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		return nil
 	}
 
-	r.phases = make(map[CommandId]int)
-	r.cmds = make(map[CommandId]state.Command)
-	r.deps = make(map[CommandId]DepVector)
+	r.cmdDescs = make(map[CommandId]*CommandDesc)
 	r.vectors = make(map[state.Key]*superDepVector)
 	// TODO: reset committer, gc, and propose ?
 
@@ -640,54 +651,73 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 			}
 			if p == COMMIT || p == DELIVER ||
 				(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot) {
+				desc := &CommandDesc{}
+				r.cmdDescs[cmdId] = desc
 				if p == SLOW_ACCEPT {
-					r.phases[cmdId] = p
+					desc.phase = p
 				} else {
-					r.phases[cmdId] = COMMIT
+					desc.phase = COMMIT
 				}
-				r.cmds[cmdId] = newLeaderAck.Cmds[cmdId]
-				r.deps[cmdId] = newLeaderAck.Deps[cmdId]
+				desc.cmd = newLeaderAck.Cmds[cmdId]
+				desc.dep = newLeaderAck.Deps[cmdId]
 				acceptedCmds[cmdId] = struct{}{}
-				builder.adjust(cmdId, r.deps[cmdId])
+				builder.adjust(cmdId, desc.dep)
 			} else {
 				someMsg := moreThanFourth(cmdId)
 				if someMsg != nil {
-					r.phases[cmdId] = SLOW_ACCEPT
-					r.cmds[cmdId] = someMsg.Cmds[cmdId]
-					r.deps[cmdId] = someMsg.Deps[cmdId]
+					desc := &CommandDesc{}
+					r.cmdDescs[cmdId] = desc
+					desc.phase = SLOW_ACCEPT
+					desc.cmd = someMsg.Cmds[cmdId]
+					desc.dep = someMsg.Deps[cmdId]
 					acceptedCmds[cmdId] = struct{}{}
-					builder.adjust(cmdId, r.deps[cmdId])
+					builder.adjust(cmdId, desc.dep)
 				}
 			}
 		}
 	}
 
 	nopCmds := make(map[CommandId]struct{})
-	for _, dep := range r.deps {
-		dep.Iter(func(depCmdId CommandId) bool {
-			p, exists := r.phases[depCmdId]
-			if !exists || p == START {
-				r.phases[depCmdId] = SLOW_ACCEPT
-				r.cmds[depCmdId] = state.NOOP()[0]
+	for _, desc := range r.cmdDescs {
+		desc.dep.Iter(func(depCmdId CommandId) bool {
+			depDesc, exists := r.cmdDescs[depCmdId]
+			if !exists {
+				depDesc = &CommandDesc{}
+				r.cmdDescs[depCmdId] = depDesc
+			}
+			if depDesc.phase == START {
+				depDesc.phase = SLOW_ACCEPT
+				depDesc.cmd = state.NOOP()[0]
 				nopCmds[depCmdId] = struct{}{}
 			}
 			return false
 		})
 	}
 	for nopId := range nopCmds {
-		r.deps[nopId] = *EmptyVector()
+		r.cmdDescs[nopId].dep = *EmptyVector()
 	}
 
 	r.cballot = r.ballot
 	r.committer = builder.buildCommitterFrom(r.committer,
 		&(r.Mutex), &(r.Shutdown))
 
+	// TODO: get rid of it
+	var phases map[CommandId]int
+	var cmds   map[CommandId]state.Command
+	var deps   map[CommandId]DepVector
+
+	for cmdId, desc := range r.cmdDescs {
+		phases[cmdId] = desc.phase
+		cmds[cmdId] = desc.cmd
+		deps[cmdId] = desc.dep
+	}
+
 	sync := &MSync{
 		Replica: r.Id,
 		Ballot:  r.ballot,
-		Phases:  r.phases,
-		Cmds:    r.cmds,
-		Deps:    r.deps,
+		Phases:  phases,
+		Cmds:    cmds,
+		Deps:    deps,
 	}
 	go func() {
 		r.Lock()
@@ -707,15 +737,21 @@ func (r *Replica) handleSync(msg *MSync) {
 	r.status = FOLLOWER
 	r.ballot = msg.Ballot
 	r.cballot = msg.Ballot
-	r.phases = msg.Phases
-	r.cmds = msg.Cmds
-	r.deps = msg.Deps
+
+	r.cmdDescs = make(map[CommandId]*CommandDesc)
+	for cmdId := range msg.Phases {
+		desc := &CommandDesc{}
+		r.cmdDescs[cmdId] = desc
+		desc.phase = msg.Phases[cmdId]
+		desc.cmd = msg.Cmds[cmdId]
+		desc.dep = msg.Deps[cmdId]
+	}
 
 	r.clean()
 
 	builder := newBuilder()
-	for cmdId, dep := range r.deps {
-		builder.adjust(cmdId, dep)
+	for cmdId, desc := range r.cmdDescs {
+		builder.adjust(cmdId, desc.dep)
 	}
 	r.committer = builder.buildCommitterFrom(r.committer,
 		&(r.Mutex), &(r.Shutdown))
@@ -782,8 +818,8 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 	}
 
 	r.status = LEADER
-	for cmdId, p := range r.phases {
-		if p == COMMIT {
+	for cmdId, desc := range r.cmdDescs {
+		if desc.phase == COMMIT {
 			continue
 		}
 
@@ -791,8 +827,8 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 			Replica:   r.Id,
 			Ballot:    r.ballot,
 			CommandId: cmdId,
-			Command:   r.cmds[cmdId],
-			Dep:       r.deps[cmdId],
+			Command:   desc.cmd,
+			Dep:       desc.dep,
 		}
 		go r.sendToAll(commit, r.cs.commitRPC)
 		go r.handleCommit(commit)
@@ -830,15 +866,21 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 }
 
 func (r *Replica) executeAndReply(cmdId CommandId) error {
-	if r.phases[cmdId] != COMMIT {
+	desc, exists := r.cmdDescs[cmdId]
+	if !exists {
+		desc = &CommandDesc{}
+		r.cmdDescs[cmdId] = desc
+	}
+
+	if desc.phase != COMMIT {
 		return errors.New("command has not yet been committed")
 	}
-	r.phases[cmdId] = DELIVER
+	desc.phase = DELIVER
 
 	if !r.Exec {
 		return nil
 	}
-	cmd := r.cmds[cmdId]
+	cmd := desc.cmd
 	if cmd.Op == state.NONE {
 		// NOOP
 		return nil
@@ -850,18 +892,17 @@ func (r *Replica) executeAndReply(cmdId CommandId) error {
 		return nil
 	}
 
-	p, exists := r.proposes[cmdId]
-	if !exists {
+	if desc.propose == nil {
 		return nil
 	}
 
 	proposeReply := &genericsmrproto.ProposeReplyTS{
 		OK:        genericsmr.TRUE,
-		CommandId: p.CommandId,
+		CommandId: desc.propose.CommandId,
 		Value:     v,
-		Timestamp: p.Timestamp,
+		Timestamp: desc.propose.Timestamp,
 	}
-	r.ReplyProposeTS(proposeReply, p.Reply, p.Mutex)
+	r.ReplyProposeTS(proposeReply, desc.propose.Reply, desc.propose.Mutex)
 
 	return nil
 }
@@ -893,13 +934,13 @@ func (r *Replica) add(cmd *state.Command, cmdId CommandId) {
 
 func (r *Replica) updateVectors() {
 	r.committer.undeliveredIter(func(cmdId CommandId) {
-		cmd := r.cmds[cmdId]
+		cmd := r.cmdDescs[cmdId].cmd
 		r.add(&cmd, cmdId)
 	})
 }
 
 func (r *Replica) clean() {
-	for cmdId, _ := range r.phases {
+	for cmdId := range r.cmdDescs {
 		if r.committer.wasDelivered(cmdId) {
 			r.gc.clean(cmdId)
 		}

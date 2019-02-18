@@ -442,7 +442,7 @@ func (r *Replica) handleSlowAck(msg *MSlowAck) {
 		r.cmdDescs[msg.CommandId] = desc
 	}
 
-	if desc.slowAckQuorumSet == nil  {
+	if desc.slowAckQuorumSet == nil {
 		slowQuorumSize := r.N/2 + 1
 
 		related := func(e1, e2 interface{}) bool {
@@ -508,9 +508,9 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	r.ballot = msg.Ballot
 
 	// TODO: get rid of it
-	var phases map[CommandId]int
-	var cmds   map[CommandId]state.Command
-	var deps   map[CommandId]DepVector
+	phases := make(map[CommandId]int)
+	cmds := make(map[CommandId]state.Command)
+	deps := make(map[CommandId]DepVector)
 
 	for cmdId, desc := range r.cmdDescs {
 		phases[cmdId] = desc.phase
@@ -634,9 +634,8 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		return nil
 	}
 
-	r.cmdDescs = make(map[CommandId]*CommandDesc)
+	newCmdDescs := make(map[CommandId]*CommandDesc)
 	r.vectors = make(map[state.Key]*superDepVector)
-	// TODO: reset committer, gc, and propose ?
 
 	acceptedCmds := make(map[CommandId]struct{})
 	builder := newBuilder()
@@ -652,7 +651,7 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 			if p == COMMIT || p == DELIVER ||
 				(p == SLOW_ACCEPT && newLeaderAck.Cballot == maxCballot) {
 				desc := &CommandDesc{}
-				r.cmdDescs[cmdId] = desc
+				newCmdDescs[cmdId] = desc
 				if p == SLOW_ACCEPT {
 					desc.phase = p
 				} else {
@@ -660,22 +659,32 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 				}
 				desc.cmd = newLeaderAck.Cmds[cmdId]
 				desc.dep = newLeaderAck.Deps[cmdId]
+				oldDesc, exists := r.cmdDescs[cmdId]
+				if exists {
+					desc.propose = oldDesc.propose
+				}
 				acceptedCmds[cmdId] = struct{}{}
 				builder.adjust(cmdId, desc.dep)
 			} else {
 				someMsg := moreThanFourth(cmdId)
 				if someMsg != nil {
 					desc := &CommandDesc{}
-					r.cmdDescs[cmdId] = desc
+					newCmdDescs[cmdId] = desc
 					desc.phase = SLOW_ACCEPT
 					desc.cmd = someMsg.Cmds[cmdId]
 					desc.dep = someMsg.Deps[cmdId]
+					oldDesc, exists := r.cmdDescs[cmdId]
+					if exists {
+						desc.propose = oldDesc.propose
+					}
 					acceptedCmds[cmdId] = struct{}{}
 					builder.adjust(cmdId, desc.dep)
 				}
 			}
 		}
 	}
+
+	r.cmdDescs = newCmdDescs
 
 	nopCmds := make(map[CommandId]struct{})
 	for _, desc := range r.cmdDescs {
@@ -702,9 +711,9 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		&(r.Mutex), &(r.Shutdown))
 
 	// TODO: get rid of it
-	var phases map[CommandId]int
-	var cmds   map[CommandId]state.Command
-	var deps   map[CommandId]DepVector
+	phases := make(map[CommandId]int)
+	cmds := make(map[CommandId]state.Command)
+	deps := make(map[CommandId]DepVector)
 
 	for cmdId, desc := range r.cmdDescs {
 		phases[cmdId] = desc.phase
@@ -738,14 +747,19 @@ func (r *Replica) handleSync(msg *MSync) {
 	r.ballot = msg.Ballot
 	r.cballot = msg.Ballot
 
-	r.cmdDescs = make(map[CommandId]*CommandDesc)
+	newCmdDescs := make(map[CommandId]*CommandDesc)
 	for cmdId := range msg.Phases {
 		desc := &CommandDesc{}
-		r.cmdDescs[cmdId] = desc
+		newCmdDescs[cmdId] = desc
 		desc.phase = msg.Phases[cmdId]
 		desc.cmd = msg.Cmds[cmdId]
 		desc.dep = msg.Deps[cmdId]
+		oldDesc, exists := r.cmdDescs[cmdId]
+		if exists {
+			desc.propose = oldDesc.propose
+		}
 	}
+	r.cmdDescs = newCmdDescs
 
 	r.clean()
 
@@ -817,8 +831,14 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 		return
 	}
 
+	maxId := int32(0)
+
 	r.status = LEADER
 	for cmdId, desc := range r.cmdDescs {
+		if maxId < cmdId.SeqNum {
+			maxId = cmdId.SeqNum
+		}
+
 		if desc.phase == COMMIT {
 			continue
 		}
@@ -867,12 +887,8 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 
 func (r *Replica) executeAndReply(cmdId CommandId) error {
 	desc, exists := r.cmdDescs[cmdId]
-	if !exists {
-		desc = &CommandDesc{}
-		r.cmdDescs[cmdId] = desc
-	}
 
-	if desc.phase != COMMIT {
+	if !exists || desc.phase != COMMIT {
 		return errors.New("command has not yet been committed")
 	}
 	desc.phase = DELIVER

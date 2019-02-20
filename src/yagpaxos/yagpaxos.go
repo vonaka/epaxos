@@ -21,6 +21,7 @@ type Replica struct {
 
 	cmdDescs map[CommandId]*CommandDesc
 	vectors  map[state.Key]*superDepVector
+	buf      map[CommandId]int
 
 	committer *committer
 	gc        *gc
@@ -70,6 +71,7 @@ type CommunicationSupply struct {
 	syncChan         chan fastrpc.Serializable
 	syncAckChan      chan fastrpc.Serializable
 	collectChan      chan fastrpc.Serializable
+	flushChan        chan fastrpc.Serializable
 
 	fastAckRPC      uint8
 	commitRPC       uint8
@@ -79,6 +81,7 @@ type CommunicationSupply struct {
 	syncRPC         uint8
 	syncAckRPC      uint8
 	collectRPC      uint8
+	flushRPC        uint8
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
@@ -119,6 +122,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 			collectChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
+			flushChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
 		},
 	}
 	r.committer = newCommitter(&(r.Mutex), &(r.Shutdown))
@@ -157,6 +162,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		r.RegisterRPC(new(MSyncAck), r.cs.syncAckChan)
 	r.cs.collectRPC =
 		r.RegisterRPC(new(MCollect), r.cs.collectChan)
+	r.cs.flushRPC =
+		r.RegisterRPC(new(MFlush), r.cs.flushChan)
 
 	go r.run()
 
@@ -212,6 +219,9 @@ func (r *Replica) run() {
 		case m := <-r.cs.collectChan:
 			collect := m.(*MCollect)
 			go r.handleCollect(collect)
+		case m := <-r.cs.flushChan:
+			flush := m.(*MFlush)
+			go r.handleFlush(flush)
 		}
 	}
 }
@@ -269,7 +279,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	} else {
 		fastAck.AcceptId = -1
 	}
-	go r.sendToAll(fastAck, r.cs.fastAckRPC)
+	r.sendToAll(fastAck, r.cs.fastAckRPC)
 	go r.handleFastAck(fastAck)
 }
 
@@ -357,10 +367,8 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			Dep:       leaderFastAck.Dep,
 		}
 
-		if r.status == FOLLOWER {
-			go r.SendMsg(leaderFastAck.Replica, r.cs.commitRPC, commit)
-		} else {
-			go r.sendToAll(commit, r.cs.commitRPC)
+		if r.status == LEADER {
+			r.sendToAll(commit, r.cs.commitRPC)
 		}
 		go r.handleCommit(commit)
 	} else {
@@ -382,7 +390,7 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			Command:   leaderFastAck.Command,
 			Dep:       leaderFastAck.Dep,
 		}
-		go r.sendToAll(slowAck, r.cs.slowAckRPC)
+		r.sendToAll(slowAck, r.cs.slowAckRPC)
 		go r.handleSlowAck(slowAck)
 	}
 }
@@ -423,7 +431,7 @@ func (r *Replica) handleCommit(msg *MCommit) {
 			Replica:   r.Id,
 			CommandId: msg.CommandId,
 		}
-		go r.sendToAll(collect, r.cs.collectRPC)
+		r.sendToAll(collect, r.cs.collectRPC)
 		go r.handleCollect(collect)
 	}
 }
@@ -490,7 +498,6 @@ func (r *Replica) handleSlowAcks(q *quorum) {
 		Command:   someSlowAck.Command,
 		Dep:       someSlowAck.Dep,
 	}
-	go r.sendToAll(commit, r.cs.commitRPC)
 	go r.handleCommit(commit)
 }
 
@@ -530,11 +537,7 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	if l := leader(r.ballot, r.N); l == r.Id {
 		go r.handleNewLeaderAck(newLeaderAck)
 	} else {
-		go func() {
-			r.Lock()
-			defer r.Unlock()
-			r.SendMsg(l, r.cs.newLeaderAckRPC, newLeaderAck)
-		}()
+		r.SendMsg(l, r.cs.newLeaderAckRPC, newLeaderAck)
 	}
 }
 
@@ -711,12 +714,12 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 		&(r.Mutex), &(r.Shutdown))
 
 	// TODO: get rid of it
-	phases := make(map[CommandId]int)
+	r.buf = make(map[CommandId]int)
 	cmds := make(map[CommandId]state.Command)
 	deps := make(map[CommandId]DepVector)
 
 	for cmdId, desc := range r.cmdDescs {
-		phases[cmdId] = desc.phase
+		r.buf[cmdId] = desc.phase
 		cmds[cmdId] = desc.cmd
 		deps[cmdId] = desc.dep
 	}
@@ -724,15 +727,11 @@ func (r *Replica) handleNewLeaderAcks(q *quorum) {
 	sync := &MSync{
 		Replica: r.Id,
 		Ballot:  r.ballot,
-		Phases:  phases,
+		Phases:  r.buf,
 		Cmds:    cmds,
 		Deps:    deps,
 	}
-	go func() {
-		r.Lock()
-		defer r.Unlock()
-		r.sendToAll(sync, r.cs.syncRPC)
-	}()
+	r.sendToAll(sync, r.cs.syncRPC)
 }
 
 func (r *Replica) handleSync(msg *MSync) {
@@ -746,6 +745,7 @@ func (r *Replica) handleSync(msg *MSync) {
 	r.status = FOLLOWER
 	r.ballot = msg.Ballot
 	r.cballot = msg.Ballot
+	r.buf = msg.Phases
 
 	newCmdDescs := make(map[CommandId]*CommandDesc)
 	for cmdId := range msg.Phases {
@@ -777,7 +777,7 @@ func (r *Replica) handleSync(msg *MSync) {
 		Replica: r.Id,
 		Ballot:  msg.Ballot,
 	}
-	go r.SendMsg(leader(msg.Ballot, r.N), r.cs.syncAckRPC, syncAck)
+	r.SendMsg(leader(msg.Ballot, r.N), r.cs.syncAckRPC, syncAck)
 }
 
 func (r *Replica) handleSyncAck(msg *MSyncAck) {
@@ -832,8 +832,24 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 	}
 
 	r.status = LEADER
-	for cmdId, desc := range r.cmdDescs {
-		if desc.phase == COMMIT {
+	r.sendToAll(&MFlush{}, r.cs.flushRPC)
+	go r.handleFlush(&MFlush{})
+
+	r.clean()
+	r.updateVectors()
+}
+
+func (r *Replica) handleFlush(*MFlush) {
+	r.Lock()
+	defer r.Unlock()
+
+	for cmdId, phase := range r.buf {
+		if phase == COMMIT {
+			continue
+		}
+
+		desc, exists := r.cmdDescs[cmdId]
+		if !exists {
 			continue
 		}
 
@@ -844,12 +860,8 @@ func (r *Replica) handleSyncAcks(q *quorum) {
 			Command:   desc.cmd,
 			Dep:       desc.dep,
 		}
-		go r.sendToAll(commit, r.cs.commitRPC)
 		go r.handleCommit(commit)
 	}
-
-	r.clean()
-	r.updateVectors()
 }
 
 func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
@@ -873,7 +885,7 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 		Replica: r.Id,
 		Ballot:  newBallot,
 	}
-	go r.sendToAll(newLeader, r.cs.newLeaderRPC)
+	r.sendToAll(newLeader, r.cs.newLeaderRPC)
 	go r.handleNewLeader(newLeader)
 
 	return nil

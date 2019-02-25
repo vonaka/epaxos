@@ -21,7 +21,7 @@ type quorumSet struct {
 	related    func(interface{}, interface{}) bool
 	strongTest func(*quorum) bool
 	weakTest   func(*quorum) bool
-	handler    func(*quorum)
+	handler    func(quorum)
 	afterHours bool
 }
 
@@ -54,7 +54,7 @@ func (q *quorum) getLeaderElement() interface{} {
 
 func newQuorumSet(related func(interface{}, interface{}) bool,
 	strongTest func(*quorum) bool, weakTest func(*quorum) bool,
-	handler func(*quorum), waitFor time.Duration) *quorumSet {
+	handler func(quorum), waitFor time.Duration) *quorumSet {
 	qs := &quorumSet{
 		mainQuorum: newQuorum(),
 		quorums:    make([]*quorum, INITIAL_Q_SIZE),
@@ -75,7 +75,7 @@ func newQuorumSet(related func(interface{}, interface{}) bool,
 		}
 		qs.afterHours = true
 		if qs.weakTest(qs.mainQuorum) {
-			go qs.handler(qs.mainQuorum)
+			go qs.handler(*qs.mainQuorum)
 		}
 	}()
 
@@ -89,7 +89,7 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 	qs.mainQuorum.add(e, fromLeader)
 	if qs.afterHours {
 		if qs.weakTest(qs.mainQuorum) {
-			go qs.handler(qs.mainQuorum)
+			go qs.handler(*qs.mainQuorum)
 		}
 		return
 	}
@@ -99,7 +99,7 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 		if qs.related(q.elements[0], e) {
 			q.add(e, fromLeader)
 			if !qs.afterHours && qs.strongTest(q) {
-				go qs.handler(q)
+				go qs.handler(*q)
 			}
 			return
 		}
@@ -116,6 +116,6 @@ func (qs *quorumSet) add(e interface{}, fromLeader bool) {
 	qs.realLen++
 
 	if !qs.afterHours && qs.strongTest(q) {
-		go qs.handler(q)
+		go qs.handler(*q)
 	}
 }

@@ -23,6 +23,7 @@ type Replica struct {
 	vectors  map[state.Key]*superDepVector
 	buf      map[CommandId]int
 
+	addMutex  sync.Mutex
 	committer *committer
 	gc        *gc
 
@@ -35,6 +36,8 @@ type Replica struct {
 }
 
 type CommandDesc struct {
+	sync.Mutex
+
 	phase   int
 	cmd     state.Command
 	dep     DepVector
@@ -228,13 +231,15 @@ func (r *Replica) run() {
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	r.Lock()
-	defer r.Unlock()
+	status := r.status
+	ballot := r.ballot
 
-	if r.status != LEADER && r.status != FOLLOWER {
+	if status != LEADER && status != FOLLOWER {
 		go func() {
 			time.Sleep(2 * time.Second)
 			r.handlePropose(msg)
 		}()
+		r.Unlock()
 		return
 	}
 
@@ -248,13 +253,18 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		desc = &CommandDesc{}
 		r.cmdDescs[cmdId] = desc
 	}
+	r.Unlock()
+
+	desc.Lock()
 	if desc.propose != nil {
+		desc.Unlock()
 		return
 	}
 
 	if desc.phase < SLOW_ACCEPT {
 		desc.phase = FAST_ACCEPT
 		desc.cmd = msg.Command
+		r.addMutex.Lock()
 		dep, exists := r.vectors[msg.Command.K]
 		if exists {
 			desc.dep = dep.vector
@@ -262,33 +272,46 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 			desc.dep = *EmptyVector()
 		}
 		r.add(&msg.Command, cmdId)
+		r.addMutex.Unlock()
 	}
 
 	desc.propose = msg
 
 	fastAck := &MFastAck{
 		Replica:   r.Id,
-		Ballot:    r.ballot,
+		Ballot:    ballot,
 		CommandId: cmdId,
 		Command:   msg.Command,
 		Dep:       desc.dep,
 	}
-	if r.status == LEADER {
+	desc.Unlock()
+
+	r.Lock()
+	defer r.Unlock()
+	if status == LEADER {
 		r.committer.add(cmdId)
 		fastAck.AcceptId = r.committer.getInstance(cmdId)
 	} else {
 		fastAck.AcceptId = -1
 	}
+
 	r.sendToAll(fastAck, r.cs.fastAckRPC)
 	go r.handleFastAck(fastAck)
 }
 
 func (r *Replica) handleFastAck(msg *MFastAck) {
 	r.Lock()
-	defer r.Unlock()
+	status := r.status
+	ballot := r.ballot
 
-	if (r.status != LEADER && r.status != FOLLOWER) || r.ballot != msg.Ballot {
+	if (status != LEADER && status != FOLLOWER) || ballot != msg.Ballot {
+		r.Unlock()
 		return
+	}
+
+	fromLeader := msg.Replica == leader(ballot, r.N)
+	if fromLeader && status == FOLLOWER {
+		r.committer.addTo(msg.CommandId, msg.AcceptId)
 	}
 
 	desc, exists := r.cmdDescs[msg.CommandId]
@@ -296,7 +319,10 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 		desc = &CommandDesc{}
 		r.cmdDescs[msg.CommandId] = desc
 	}
+	r.Unlock()
 
+	desc.Lock()
+	defer desc.Unlock()
 	if desc.fastAckQuorumSet == nil {
 		fastQuorumSize := 3*r.N/4 + 1
 		slowQuorumSize := r.N/2 + 1
@@ -304,18 +330,23 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 		related := func(e1, e2 interface{}) bool {
 			fastAck1 := e1.(*MFastAck)
 			fastAck2 := e2.(*MFastAck)
+			r.addMutex.Lock()
+			defer r.addMutex.Unlock()
 			return fastAck1.Dep.Equals(&(fastAck2.Dep))
 		}
 
 		totalNum := 0
 		rest := r.N - fastQuorumSize
 		strongTest := func(q *quorum) bool {
+			if q == nil {
+				return false
+			}
 			totalNum++
 			qs := desc.fastAckQuorumSet
 			if q.size < fastQuorumSize && totalNum > rest {
 				qs.afterHours = true
 				if qs.weakTest(qs.mainQuorum) {
-					go qs.handler(qs.mainQuorum)
+					go qs.handler(*qs.mainQuorum)
 				}
 				return false
 			}
@@ -323,7 +354,7 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 		}
 
 		weakTest := func(q *quorum) bool {
-			return q.size >= slowQuorumSize
+			return q != nil && q.size >= slowQuorumSize
 		}
 
 		waitFor := time.Duration(r.N+1) * r.cs.maxLatency // FIXME
@@ -332,18 +363,16 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 			weakTest, r.handleFastAcks, waitFor)
 	}
 
-	fromLeader := msg.Replica == leader(r.ballot, r.N)
-	if fromLeader && r.status == FOLLOWER {
-		r.committer.addTo(msg.CommandId, msg.AcceptId)
-	}
 	desc.fastAckQuorumSet.add(msg, fromLeader)
 }
 
-func (r *Replica) handleFastAcks(q *quorum) {
+func (r *Replica) handleFastAcks(q quorum) {
 	r.Lock()
-	defer r.Unlock()
+	status := r.status
+	ballot := r.ballot
+	r.Unlock()
 
-	if (r.status != LEADER && r.status != FOLLOWER) || q == nil {
+	if status != LEADER && status != FOLLOWER {
 		return
 	}
 
@@ -354,33 +383,31 @@ func (r *Replica) handleFastAcks(q *quorum) {
 		return
 	}
 	leaderFastAck := leaderMsg.(*MFastAck)
-	if r.ballot != leaderFastAck.Ballot {
+	if ballot != leaderFastAck.Ballot {
 		return
 	}
 
 	if q.size >= fastQuorumSize {
 		commit := &MCommit{
 			Replica:   r.Id,
-			Ballot:    r.ballot,
+			Ballot:    ballot,
 			CommandId: leaderFastAck.CommandId,
 			Command:   leaderFastAck.Command,
 			Dep:       leaderFastAck.Dep,
 		}
 
-		if r.status == LEADER {
+		if status == LEADER {
+			r.Lock()
 			r.sendToAll(commit, r.cs.commitRPC)
+			r.Unlock()
 		}
 		go r.handleCommit(commit)
 	} else {
+		r.Lock()
 		desc, exists := r.cmdDescs[leaderFastAck.CommandId]
 		if !exists {
 			desc = &CommandDesc{}
 			r.cmdDescs[leaderFastAck.CommandId] = desc
-		}
-		desc.phase = SLOW_ACCEPT
-		if r.status == FOLLOWER {
-			desc.cmd = leaderFastAck.Command
-			desc.dep = leaderFastAck.Dep
 		}
 
 		slowAck := &MSlowAck{
@@ -390,8 +417,18 @@ func (r *Replica) handleFastAcks(q *quorum) {
 			Command:   leaderFastAck.Command,
 			Dep:       leaderFastAck.Dep,
 		}
+
 		r.sendToAll(slowAck, r.cs.slowAckRPC)
 		go r.handleSlowAck(slowAck)
+		r.Unlock()
+
+		desc.Lock()
+		desc.setPhase(SLOW_ACCEPT)
+		if status == FOLLOWER {
+			desc.cmd = leaderFastAck.Command
+			desc.dep = leaderFastAck.Dep
+		}
+		desc.Unlock()
 	}
 }
 
@@ -403,26 +440,34 @@ func (r *Replica) handleCollect(msg *MCollect) {
 
 func (r *Replica) handleCommit(msg *MCommit) {
 	r.Lock()
-	defer r.Unlock()
+	status := r.status
+	ballot := r.ballot
 
 	desc, exists := r.cmdDescs[msg.CommandId]
 	if !exists {
 		desc = &CommandDesc{}
 		r.cmdDescs[msg.CommandId] = desc
 	}
+	r.Unlock()
 
-	if (r.status != LEADER && r.status != FOLLOWER) || msg.Ballot > r.ballot ||
+	desc.Lock()
+	if (status != LEADER && status != FOLLOWER) || msg.Ballot > ballot ||
 		desc.phase == DELIVER {
+		desc.Unlock()
 		return
 	}
 
-	desc.phase = COMMIT
+	desc.setPhase(COMMIT)
 	desc.cmd = msg.Command
 	desc.dep = msg.Dep
+	desc.Unlock()
 
-	if r.status == LEADER {
+	r.Lock()
+	defer r.Unlock()
+
+	if status == LEADER {
 		r.committer.deliver(msg.CommandId, r.executeAndReply)
-	} else if r.status == FOLLOWER {
+	} else if status == FOLLOWER {
 		r.committer.safeDeliver(msg.CommandId, r.executeAndReply)
 	}
 
@@ -472,11 +517,11 @@ func (r *Replica) handleSlowAck(msg *MSlowAck) {
 	desc.slowAckQuorumSet.add(msg, msg.Replica == leader(r.ballot, r.N))
 }
 
-func (r *Replica) handleSlowAcks(q *quorum) {
+func (r *Replica) handleSlowAcks(q quorum) {
 	r.Lock()
 	defer r.Unlock()
 
-	if r.status != LEADER || q == nil {
+	if r.status != LEADER {
 		return
 	}
 
@@ -520,9 +565,11 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	deps := make(map[CommandId]DepVector)
 
 	for cmdId, desc := range r.cmdDescs {
+		desc.Lock()
 		phases[cmdId] = desc.phase
 		cmds[cmdId] = desc.cmd
 		deps[cmdId] = desc.dep
+		desc.Unlock()
 	}
 
 	newLeaderAck := &MNewLeaderAck{
@@ -537,7 +584,9 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	if l := leader(r.ballot, r.N); l == r.Id {
 		go r.handleNewLeaderAck(newLeaderAck)
 	} else {
+		r.addMutex.Lock()
 		r.SendMsg(l, r.cs.newLeaderAckRPC, newLeaderAck)
+		r.addMutex.Unlock()
 	}
 }
 
@@ -581,11 +630,11 @@ func (r *Replica) handleNewLeaderAck(msg *MNewLeaderAck) {
 	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
 }
 
-func (r *Replica) handleNewLeaderAcks(q *quorum) {
+func (r *Replica) handleNewLeaderAcks(q quorum) {
 	r.Lock()
 	defer r.Unlock()
 
-	if r.status != PREPARING || q == nil {
+	if r.status != PREPARING {
 		return
 	}
 
@@ -777,7 +826,9 @@ func (r *Replica) handleSync(msg *MSync) {
 		Replica: r.Id,
 		Ballot:  msg.Ballot,
 	}
+	r.addMutex.Lock()
 	r.SendMsg(leader(msg.Ballot, r.N), r.cs.syncAckRPC, syncAck)
+	r.addMutex.Unlock()
 }
 
 func (r *Replica) handleSyncAck(msg *MSyncAck) {
@@ -812,11 +863,11 @@ func (r *Replica) handleSyncAck(msg *MSyncAck) {
 	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
 }
 
-func (r *Replica) handleSyncAcks(q *quorum) {
+func (r *Replica) handleSyncAcks(q quorum) {
 	r.Lock()
 	defer r.Unlock()
 
-	if r.status != PREPARING || q == nil {
+	if r.status != PREPARING {
 		return
 	}
 
@@ -893,11 +944,19 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 
 func (r *Replica) executeAndReply(cmdId CommandId) error {
 	desc, exists := r.cmdDescs[cmdId]
+	err := errors.New("command has not yet been committed")
 
-	if !exists || desc.phase != COMMIT {
-		return errors.New("command has not yet been committed")
+	if !exists {
+		return err
 	}
-	desc.phase = DELIVER
+
+	desc.Lock()
+	defer desc.Unlock()
+
+	if desc.phase != COMMIT {
+		return err
+	}
+	desc.setPhase(DELIVER)
 
 	if !r.Exec {
 		return nil
@@ -930,6 +989,9 @@ func (r *Replica) executeAndReply(cmdId CommandId) error {
 }
 
 func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
+	r.addMutex.Lock()
+	defer r.addMutex.Unlock()
+
 	for p := int32(0); p < int32(r.N); p++ {
 		r.M.Lock()
 		if r.Alive[p] {
@@ -951,10 +1013,13 @@ func (r *Replica) add(cmd *state.Command, cmdId CommandId) {
 		r.vectors[cmd.K] = dep
 	}
 
-	dep.add(cmd, cmdId)
+	dep.superDepAdd(cmd, cmdId)
 }
 
 func (r *Replica) updateVectors() {
+	r.addMutex.Lock()
+	defer r.addMutex.Unlock()
+
 	r.committer.undeliveredIter(func(cmdId CommandId) {
 		cmd := r.cmdDescs[cmdId].cmd
 		r.add(&cmd, cmdId)
@@ -971,6 +1036,7 @@ func (r *Replica) clean() {
 
 func (r *Replica) flush() {
 	cmdId := r.committer.cmdIds[r.committer.last]
+
 	if r.status == LEADER {
 		r.committer.deliver(cmdId, r.executeAndReply)
 	} else if r.status == FOLLOWER {
@@ -1001,11 +1067,10 @@ func newSuperDepVector() *superDepVector {
 	}
 }
 
-func (sdv *superDepVector) add(cmd *state.Command, cmdId CommandId) {
+func (sdv *superDepVector) superDepAdd(cmd *state.Command, cmdId CommandId) {
 	if cmd.Op != state.PUT {
 		return
 	}
-
 	cmdIndex, exists := sdv.commandIndices[cmdId.ClientId]
 	vector := &(sdv.vector)
 	if exists {
@@ -1019,4 +1084,13 @@ func (sdv *superDepVector) add(cmd *state.Command, cmdId CommandId) {
 		sdv.commandIndices[cmdId.ClientId] = vector.Size
 		vector.Size++
 	}
+}
+
+func (desc *CommandDesc) setPhase(phase int) bool {
+	if desc.phase >= phase {
+		return false
+	}
+
+	desc.phase = phase
+	return true
 }

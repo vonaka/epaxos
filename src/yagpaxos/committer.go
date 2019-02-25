@@ -9,6 +9,8 @@ import (
 )
 
 type committer struct {
+	sync.Mutex
+
 	next      int
 	first     int
 	last      int
@@ -46,10 +48,15 @@ func newCommitter(m *sync.Mutex, shutdown *bool) *committer {
 }
 
 func (c *committer) getInstance(cmdId CommandId) int {
+	c.Lock()
+	defer c.Unlock()
 	return c.instances[cmdId]
 }
 
 func (c *committer) add(cmdId CommandId) {
+	c.Lock()
+	defer c.Unlock()
+
 	c.cmdIds[c.next] = cmdId
 	c.instances[cmdId] = c.next
 	c.last = c.next
@@ -65,6 +72,9 @@ func (c *committer) addTo(cmdId CommandId, instance int) {
 }
 
 func (c *committer) deliver(cmdId CommandId, f func(CommandId) error) {
+	c.Lock()
+	defer c.Unlock()
+
 	i := c.delivered + 1
 	j, exists := c.instances[cmdId]
 	for ; exists && i <= j; i++ {
@@ -81,6 +91,9 @@ func (c *committer) deliver(cmdId CommandId, f func(CommandId) error) {
 
 func (c *committer) safeDeliver(cmdId CommandId,
 	f func(CommandId) error) error {
+	c.Lock()
+	defer c.Unlock()
+
 	i := c.delivered + 1
 	j, exists := c.instances[cmdId]
 	for ; exists && i <= j; i++ {
@@ -99,11 +112,17 @@ func (c *committer) safeDeliver(cmdId CommandId,
 }
 
 func (c *committer) wasDelivered(cmdId CommandId) bool {
+	c.Lock()
+	defer c.Unlock()
+
 	i, exists := c.instances[cmdId]
 	return exists && i <= c.delivered
 }
 
 func (c *committer) undeliveredIter(f func(CommandId)) {
+	c.Lock()
+	defer c.Unlock()
+
 	i := c.delivered + 1
 	j := c.last
 	for ; i <= j; i++ {
@@ -288,6 +307,9 @@ func (b *committerBuilder) adjust(cmdId CommandId, dep DepVector) {
 
 func (builder *committerBuilder) buildCommitterFrom(oldCommitter *committer,
 	m *sync.Mutex, shutdown *bool) *committer {
+	oldCommitter.Lock()
+	defer oldCommitter.Unlock()
+
 	block := builder.headBlock
 	committer := newCommitter(m, shutdown)
 	for block != nil {

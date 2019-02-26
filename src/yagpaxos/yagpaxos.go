@@ -287,7 +287,6 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	desc.Unlock()
 
 	r.Lock()
-	defer r.Unlock()
 	if status == LEADER {
 		r.committer.add(cmdId)
 		fastAck.AcceptId = r.committer.getInstance(cmdId)
@@ -296,7 +295,8 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	}
 
 	r.sendToAll(fastAck, r.cs.fastAckRPC)
-	go r.handleFastAck(fastAck)
+	r.Unlock()
+	r.handleFastAck(fastAck)
 }
 
 func (r *Replica) handleFastAck(msg *MFastAck) {
@@ -346,7 +346,13 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 			if q.size < fastQuorumSize && totalNum > rest {
 				qs.afterHours = true
 				if qs.weakTest(qs.mainQuorum) {
-					go qs.handler(*qs.mainQuorum)
+					go func() {
+						if qs.handler(*qs.mainQuorum) == nil {
+							qs.Lock()
+							qs.succeeds = true
+							qs.Unlock()
+						}
+					}()
 				}
 				return false
 			}
@@ -366,25 +372,25 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 	desc.fastAckQuorumSet.add(msg, fromLeader)
 }
 
-func (r *Replica) handleFastAcks(q quorum) {
+func (r *Replica) handleFastAcks(q quorum) error {
 	r.Lock()
 	status := r.status
 	ballot := r.ballot
 	r.Unlock()
 
 	if status != LEADER && status != FOLLOWER {
-		return
+		return errors.New("wrong replica status")
 	}
 
 	fastQuorumSize := 3*r.N/4 + 1
 
 	leaderMsg := q.getLeaderElement()
 	if leaderMsg == nil {
-		return
+		return errors.New("there is no leader in the quorum")
 	}
 	leaderFastAck := leaderMsg.(*MFastAck)
 	if ballot != leaderFastAck.Ballot {
-		return
+		return errors.New("wrong leader ballot")
 	}
 
 	if q.size >= fastQuorumSize {
@@ -400,8 +406,12 @@ func (r *Replica) handleFastAcks(q quorum) {
 			r.Lock()
 			r.sendToAll(commit, r.cs.commitRPC)
 			r.Unlock()
+		} else if status == FOLLOWER {
+			r.Lock()
+			r.SendMsg(leaderFastAck.Replica, r.cs.commitRPC, commit)
+			r.Unlock()
 		}
-		go r.handleCommit(commit)
+		r.handleCommit(commit)
 	} else {
 		r.Lock()
 		desc, exists := r.cmdDescs[leaderFastAck.CommandId]
@@ -419,7 +429,6 @@ func (r *Replica) handleFastAcks(q quorum) {
 		}
 
 		r.sendToAll(slowAck, r.cs.slowAckRPC)
-		go r.handleSlowAck(slowAck)
 		r.Unlock()
 
 		desc.Lock()
@@ -429,7 +438,11 @@ func (r *Replica) handleFastAcks(q quorum) {
 			desc.dep = leaderFastAck.Dep
 		}
 		desc.Unlock()
+
+		r.handleSlowAck(slowAck)
 	}
+
+	return nil
 }
 
 func (r *Replica) handleCollect(msg *MCollect) {
@@ -517,23 +530,25 @@ func (r *Replica) handleSlowAck(msg *MSlowAck) {
 	desc.slowAckQuorumSet.add(msg, msg.Replica == leader(r.ballot, r.N))
 }
 
-func (r *Replica) handleSlowAcks(q quorum) {
+func (r *Replica) handleSlowAcks(q quorum) error {
 	r.Lock()
-	defer r.Unlock()
 
 	if r.status != LEADER {
-		return
+		r.Unlock()
+		return errors.New("not a leader")
 	}
 
 	slowQuorumSize := r.N/2 + 1
 
 	if q.size < slowQuorumSize {
-		return
+		r.Unlock()
+		return errors.New("not enough replicas")
 	}
 
 	someSlowAck := q.elements[0].(*MSlowAck)
 	if r.ballot != someSlowAck.Ballot {
-		return
+		r.Unlock()
+		return errors.New("wrong ballot")
 	}
 
 	commit := &MCommit{
@@ -543,7 +558,10 @@ func (r *Replica) handleSlowAcks(q quorum) {
 		Command:   someSlowAck.Command,
 		Dep:       someSlowAck.Dep,
 	}
-	go r.handleCommit(commit)
+	r.Unlock()
+	r.handleCommit(commit)
+
+	return nil
 }
 
 func (r *Replica) handleNewLeader(msg *MNewLeader) {
@@ -630,23 +648,23 @@ func (r *Replica) handleNewLeaderAck(msg *MNewLeaderAck) {
 	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
 }
 
-func (r *Replica) handleNewLeaderAcks(q quorum) {
+func (r *Replica) handleNewLeaderAcks(q quorum) error {
 	r.Lock()
 	defer r.Unlock()
 
 	if r.status != PREPARING {
-		return
+		return errors.New("wrong status")
 	}
 
 	slowQuorumSize := r.N/2 + 1
 
 	if q.size < slowQuorumSize {
-		return
+		return errors.New("not enough replicas")
 	}
 
 	someMsg := q.elements[0].(*MNewLeaderAck)
 	if r.ballot != someMsg.Ballot {
-		return
+		return errors.New("wrong ballot")
 	}
 
 	maxCballot := int32(0)
@@ -781,6 +799,8 @@ func (r *Replica) handleNewLeaderAcks(q quorum) {
 		Deps:    deps,
 	}
 	r.sendToAll(sync, r.cs.syncRPC)
+
+	return nil
 }
 
 func (r *Replica) handleSync(msg *MSync) {
@@ -863,23 +883,23 @@ func (r *Replica) handleSyncAck(msg *MSyncAck) {
 	qs.add(msg, msg.Replica == leader(r.ballot, r.N))
 }
 
-func (r *Replica) handleSyncAcks(q quorum) {
+func (r *Replica) handleSyncAcks(q quorum) error {
 	r.Lock()
 	defer r.Unlock()
 
 	if r.status != PREPARING {
-		return
+		return errors.New("wrong status")
 	}
 
 	slowQuorumSize := r.N / 2 // +1 ?
 
 	if q.size < slowQuorumSize {
-		return
+		return errors.New("not enough replicas")
 	}
 
 	someMsg := q.elements[0].(*MSyncAck)
 	if r.ballot != someMsg.Ballot {
-		return
+		return errors.New("wrong ballot")
 	}
 
 	r.status = LEADER
@@ -888,6 +908,8 @@ func (r *Replica) handleSyncAcks(q quorum) {
 
 	r.clean()
 	r.updateVectors()
+
+	return nil
 }
 
 func (r *Replica) handleFlush(*MFlush) {

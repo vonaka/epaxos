@@ -19,6 +19,7 @@ import (
 	"state"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -141,6 +142,8 @@ func (b *Parameters) Connect() error {
 		}
 	}
 
+	var m sync.Mutex
+	maxCmdId := int32(0)
 	for _, i := range toConnect {
 		log.Println("Connection to ", i, " -> ", b.replicaLists[i])
 		b.servers[i] = Dial(b.replicaLists[i], false)
@@ -151,6 +154,14 @@ func (b *Parameters) Connect() error {
 				for {
 					reply := new(genericsmrproto.ProposeReplyTS)
 					reply.Unmarshal(b.readers[rep])
+					m.Lock()
+					if reply.CommandId <= maxCmdId {
+						m.Unlock()
+						continue
+					} else {
+						maxCmdId = reply.CommandId
+					}
+					m.Unlock()
 					b.repChan <- reply
 					// TODO handle errors
 				}

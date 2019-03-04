@@ -7,6 +7,7 @@ import (
 	"genericsmr"
 	"genericsmrproto"
 	"state"
+	"strings"
 	"sync"
 	"time"
 )
@@ -265,13 +266,13 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		desc.phase = FAST_ACCEPT
 		desc.cmd = msg.Command
 		r.addMutex.Lock()
+		r.add(&msg.Command, cmdId)
 		dep, exists := r.vectors[msg.Command.K]
 		if exists {
-			desc.dep = dep.vector
+			desc.dep = dep.vector.Copy()
 		} else {
 			desc.dep = *EmptyVector()
 		}
-		r.add(&msg.Command, cmdId)
 		r.addMutex.Unlock()
 	}
 
@@ -965,9 +966,12 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 }
 
 func (r *Replica) executeAndReply(cmdId CommandId) error {
-	desc, exists := r.cmdDescs[cmdId]
-	err := errors.New("command has not yet been committed")
+	var b strings.Builder
+	b.WriteString("command has not yet been committed: ")
+	b.WriteString(cmdId.String())
+	err := errors.New(b.String())
 
+	desc, exists := r.cmdDescs[cmdId]
 	if !exists {
 		return err
 	}

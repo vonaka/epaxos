@@ -2,9 +2,11 @@ package yagpaxos
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"encoding/gob"
 	"fastrpc"
+	"fmt"
 	"io"
 	"log"
 	"state"
@@ -14,6 +16,12 @@ import (
 type CommandId struct {
 	ClientId int32
 	SeqNum   int32
+}
+
+func (cmdId CommandId) String() string {
+	b := new(bytes.Buffer)
+	fmt.Fprintf(b, "(client: %v, seq_num: %v)", cmdId.ClientId, cmdId.SeqNum)
+	return b.String()
 }
 
 type MFastAck struct {
@@ -212,6 +220,19 @@ func (dv1 *DepVector) Equals(dv2 *DepVector) bool {
 	}
 
 	return len(seen1) == len(seen2) && len(seen1) == 0
+}
+
+func (dv *DepVector) Copy() DepVector {
+	vect := make([]CommandId, dv.Size)
+
+	for i := 0; i < dv.Size; i++ {
+		vect[i] = dv.Vect[i]
+	}
+
+	return DepVector{
+		Size: dv.Size,
+		Vect: vect,
+	}
 }
 
 func (dv *DepVector) Iter(f func(cmdId CommandId) bool) bool {

@@ -71,22 +71,24 @@ func (c *committer) addTo(cmdId CommandId, instance int) {
 	}
 }
 
-func (c *committer) deliver(cmdId CommandId, f func(CommandId) error) {
+func (c *committer) deliver(cmdId CommandId, f func(CommandId) error) error {
 	c.Lock()
 	defer c.Unlock()
 
 	i := c.delivered + 1
 	j, exists := c.instances[cmdId]
 	for ; exists && i <= j; i++ {
-		if f(c.cmdIds[i]) != nil {
+		if err := f(c.cmdIds[i]); err != nil {
 			c.delivered = i - 1
-			return
+			return err
 		}
 	}
 
 	if exists && j > c.delivered {
 		c.delivered = j
 	}
+
+	return nil
 }
 
 func (c *committer) safeDeliver(cmdId CommandId,
@@ -99,10 +101,10 @@ func (c *committer) safeDeliver(cmdId CommandId,
 	for ; exists && i <= j; i++ {
 		_, exists := c.cmdIds[i]
 		if !exists {
-			return errors.New("some dependency is not commited yet")
+			return errors.New("some dependency has not yet been committed")
 		} else {
-			if f(c.cmdIds[i]) != nil {
-				return nil
+			if err := f(c.cmdIds[i]); err != nil {
+				return err
 			}
 			c.delivered = i
 		}

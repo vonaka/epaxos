@@ -266,13 +266,13 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		desc.phase = FAST_ACCEPT
 		desc.cmd = msg.Command
 		r.addMutex.Lock()
-		r.add(&msg.Command, cmdId)
 		dep, exists := r.vectors[msg.Command.K]
 		if exists {
 			desc.dep = dep.vector.Copy()
 		} else {
 			desc.dep = *EmptyVector()
 		}
+		r.add(&msg.Command, cmdId)
 		r.addMutex.Unlock()
 	}
 

@@ -57,6 +57,11 @@ func (c *committer) add(cmdId CommandId) {
 	c.Lock()
 	defer c.Unlock()
 
+	_, exists := c.instances[cmdId]
+	if exists {
+		return
+	}
+
 	c.cmdIds[c.next] = cmdId
 	c.instances[cmdId] = c.next
 	c.last = c.next
@@ -64,6 +69,9 @@ func (c *committer) add(cmdId CommandId) {
 }
 
 func (c *committer) addTo(cmdId CommandId, instance int) {
+	c.Lock()
+	defer c.Unlock()
+
 	c.cmdIds[instance] = cmdId
 	c.instances[cmdId] = instance
 	if instance > c.last {
@@ -130,6 +138,21 @@ func (c *committer) undeliveredIter(f func(CommandId)) {
 	for ; i <= j; i++ {
 		f(c.cmdIds[i])
 	}
+}
+
+func (c *committer) String() string {
+	b := new(bytes.Buffer)
+
+	for i := c.first + 1; i < c.last; i++ {
+		cmdId, exists := c.cmdIds[i]
+		if !exists {
+			fmt.Fprintf(b, "#\n")
+		} else {
+			fmt.Fprintf(b, "%v\n", cmdId)
+		}
+	}
+
+	return b.String()
 }
 
 type commandIdList struct {
@@ -242,6 +265,9 @@ func (b *committerBuilder) join(b1, b2 *buildingBlock) {
 	if b.headBlock == b2 {
 		b.headBlock = b1
 	}
+
+	b2.head = nil
+	b2.tail = nil
 }
 
 func (b *committerBuilder) adjust(cmdId CommandId, dep DepVector) {
@@ -314,6 +340,7 @@ func (builder *committerBuilder) buildCommitterFrom(oldCommitter *committer,
 
 	block := builder.headBlock
 	committer := newCommitter(m, shutdown)
+
 	for block != nil {
 		list := block.head
 		for list != nil {
@@ -337,7 +364,7 @@ func (list *commandIdList) String() string {
 
 	fmt.Fprintf(buffer, "[ ")
 	for list != nil {
-		fmt.Fprintf(buffer, "%v, ", list.cmdId)
+		fmt.Fprintf(buffer, "%v: %v, ", list.index, list.cmdId)
 		list = list.next
 	}
 	fmt.Fprintf(buffer, "]")

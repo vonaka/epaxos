@@ -45,7 +45,14 @@ type Parameters struct {
 	id             int32
 	retries        int32
 
-	repChan chan *genericsmrproto.ProposeReplyTS
+	repChan      chan *fastRep
+	lastAnswered int
+	maxCmdId     int32
+}
+
+type fastRep struct {
+	rep *genericsmrproto.ProposeReplyTS
+	id  int
 }
 
 func NewParameters(masterAddr string, masterPort int, verbose bool, leaderless bool, fast bool, localReads bool) *Parameters {
@@ -66,6 +73,9 @@ func NewParameters(masterAddr string, masterPort int, verbose bool, leaderless b
 		writers:        nil,
 		id:             0,
 		retries:        10,
+
+		lastAnswered: -1,
+		maxCmdId:     0,
 	}
 }
 
@@ -105,7 +115,7 @@ func (b *Parameters) Connect() error {
 	b.servers = make([]net.Conn, b.n)
 	b.readers = make([]*bufio.Reader, b.n)
 	b.writers = make([]*bufio.Writer, b.n)
-	b.repChan = make(chan *genericsmrproto.ProposeReplyTS, b.n)
+	b.repChan = make(chan *fastRep, b.n)
 
 	// get list of nodes to connect to
 	var toConnect []int
@@ -143,7 +153,6 @@ func (b *Parameters) Connect() error {
 	}
 
 	var m sync.Mutex
-	maxCmdId := int32(0)
 	for _, i := range toConnect {
 		log.Println("Connection to ", i, " -> ", b.replicaLists[i])
 		b.servers[i] = Dial(b.replicaLists[i], false)
@@ -155,14 +164,15 @@ func (b *Parameters) Connect() error {
 					reply := new(genericsmrproto.ProposeReplyTS)
 					reply.Unmarshal(b.readers[rep])
 					m.Lock()
-					if reply.CommandId <= maxCmdId {
+					if reply.CommandId < b.maxCmdId {
 						m.Unlock()
 						continue
-					} else {
-						maxCmdId = reply.CommandId
 					}
 					m.Unlock()
-					b.repChan <- reply
+					b.repChan <- &fastRep{
+						rep: reply,
+						id:  rep,
+					}
 					// TODO handle errors
 				}
 			}(i)
@@ -375,7 +385,12 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 		}
 
 		if b.isFast {
-			value, err = b.fastWaitReplies(args.CommandId)
+			if b.localReads && (args.Command.Op == state.GET ||
+				args.Command.Op == state.SCAN) {
+				value, err = b.fastWaitReplies(args.CommandId, b.lastAnswered)
+			} else {
+				value, err = b.fastWaitReplies(args.CommandId, -1)
+			}
 		} else {
 			value, err = b.waitReplies(submitter, args.CommandId)
 		}
@@ -407,13 +422,14 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	return value
 }
 
-func (b *Parameters) fastWaitReplies(cmdId int32) (state.Value, error) {
+func (b *Parameters) fastWaitReplies(cmdId int32, from int) (state.Value, error) {
 	for {
-		rep := <-b.repChan
-		if rep.CommandId == cmdId {
-			if rep.OK == TRUE {
-				ret := rep.Value
-				return ret, nil
+		fr := <-b.repChan
+		if fr.rep.CommandId == cmdId && (from == -1 || from == fr.id) {
+			if fr.rep.OK == TRUE {
+				b.maxCmdId = cmdId
+				b.lastAnswered = fr.id
+				return fr.rep.Value, nil
 			} else {
 				return state.NIL(), errors.New("Failed to receive a response.")
 			}

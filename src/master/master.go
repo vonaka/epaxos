@@ -93,8 +93,8 @@ func (master *Master) run() {
 		}
 	}
 
-	for {
-		time.Sleep(3000 * 1000 * 1000)
+	for true {
+		time.Sleep(1000 * 1000 * 1000)
 		new_leader := false
 		for i, node := range master.nodes {
 			err := node.Call("Replica.Ping", new(genericsmrproto.PingArgs), new(genericsmrproto.PingReply))

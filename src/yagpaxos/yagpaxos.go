@@ -578,7 +578,6 @@ func (r *Replica) handleNewLeader(msg *MNewLeader) {
 	r.status = PREPARING
 	r.ballot = msg.Ballot
 
-	// TODO: get rid of it
 	phases := make(map[CommandId]int)
 	cmds := make(map[CommandId]state.Command)
 	deps := make(map[CommandId]DepVector)
@@ -781,7 +780,6 @@ func (r *Replica) handleNewLeaderAcks(q quorum) error {
 	r.committer = builder.buildCommitterFrom(r.committer,
 		&(r.Mutex), &(r.Shutdown))
 
-	// TODO: get rid of it
 	r.buf = make(map[CommandId]int)
 	cmds := make(map[CommandId]state.Command)
 	deps := make(map[CommandId]DepVector)
@@ -862,7 +860,7 @@ func (r *Replica) handleSyncAck(msg *MSyncAck) {
 
 	qs, exists := r.syncAckQuorumSets[msg.Ballot]
 	if !exists {
-		slowQuorumSize := r.N / 2 // +1 ?
+		slowQuorumSize := r.N / 2
 
 		related := func(e1, e2 interface{}) bool {
 			return true
@@ -892,7 +890,7 @@ func (r *Replica) handleSyncAcks(q quorum) error {
 		return errors.New("wrong status")
 	}
 
-	slowQuorumSize := r.N / 2 // +1 ?
+	slowQuorumSize := r.N / 2
 
 	if q.size < slowQuorumSize {
 		return errors.New("not enough replicas")

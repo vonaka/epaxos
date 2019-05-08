@@ -28,8 +28,6 @@ type Replica struct {
 	committer *committer
 	gc        *gc
 
-	ignoreCommitted bool
-
 	newLeaderAckQuorumSets map[int32]*quorumSet
 	syncAckQuorumSets      map[int32]*quorumSet
 
@@ -89,7 +87,7 @@ type CommunicationSupply struct {
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply, ignoreCommitted bool) *Replica {
+	thrifty, exec, lread, dreply bool) *Replica {
 
 	r := Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
@@ -101,8 +99,6 @@ func NewReplica(replicaId int, peerAddrs []string,
 
 		cmdDescs: make(map[CommandId]*CommandDesc),
 		vectors:  make(map[state.Key]*superDepVector),
-
-		ignoreCommitted: ignoreCommitted,
 
 		newLeaderAckQuorumSets: make(map[int32]*quorumSet),
 		syncAckQuorumSets:      make(map[int32]*quorumSet),

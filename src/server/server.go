@@ -37,7 +37,6 @@ var dreply = flag.Bool("dreply", true, "Reply to client only after command has b
 var beacon = flag.Bool("beacon", false, "Send beacons to other replicas to compare their relative speeds.")
 var durable = flag.Bool("durable", false, "Log to a stable store (i.e., a file in the current dir).")
 var batchWait *int = flag.Int("batchwait", 0, "Milliseconds to wait before sending a batch. If set to 0, batching is disabled. Defaults to 0.")
-var ignoreCommitted = flag.Bool("ic", false, "Do not include committed or delivered messages into the set of dependencies.")
 
 func main() {
 	flag.Parse()
@@ -78,7 +77,7 @@ func main() {
 		rpc.Register(rep)
 	} else if *doYagpaxos {
 		log.Println("Starting Yet Another Optimized Generalized Paxos replica...")
-		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec, *lread, *dreply, *ignoreCommitted)
+		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec, *lread, *dreply)
 		rpc.Register(rep)
 	} else {
 		log.Println("Starting classic Paxos replica...")

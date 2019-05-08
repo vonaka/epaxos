@@ -71,7 +71,23 @@ func InitState() *State {
 }
 
 func Conflict(gamma *Command, delta *Command) bool {
-	if gamma.K == delta.K {
+	key := gamma.K
+	lb  := delta.K
+	ub  := delta.K
+
+	if gamma.Op == SCAN && delta.Op == SCAN {
+		return false
+	}
+
+	if gamma.Op == SCAN {
+		key = delta.K
+		lb  = gamma.K
+		ub  = gamma.K + Key(binary.LittleEndian.Uint64(gamma.V))
+	} else if delta.Op == SCAN {
+		ub = delta.K + Key(binary.LittleEndian.Uint64(delta.V))
+	}
+
+	if key >= lb && key <= ub {
 		if gamma.Op == PUT || delta.Op == PUT {
 			return true
 		}

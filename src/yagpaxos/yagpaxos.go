@@ -15,8 +15,7 @@ type Replica struct {
 	ballot  int32
 	cballot int32
 	status  int
-
-	//quorum
+	qs      quorumSet
 
 	cmdDescs map[CommandId]*CommandDesc
 

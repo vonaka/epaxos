@@ -73,7 +73,55 @@ func NewReplica(replicaId int, peerAddrs []string,
 	r := Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
 			thrifty, exec, lread, dreply),
+
+		ballot:  0,
+		cballot: 0,
+		status:  FOLLOWER,
+
+		cmdDescs: make(map[CommandId]*CommandDesc),
+
+		cs: CommunicationSupply{
+			maxLatency: 0,
+
+			fastAckChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
+			slowAckChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
+			newLeaderChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
+			newLeaderAckChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
+			syncChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
+			syncAckChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
+			flushChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
+		},
 	}
+
+	if leader(r.ballot, r.N) == r.Id {
+		r.status = LEADER
+	}
+
+	r.qs = newQuorumSet(r.N/2+1, r.N)
+
+	/*
+	r.cs.fastAckRPC =
+		r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
+	r.cs.slowAckRPC =
+		r.RegisterRPC(new(MSlowAck), r.cs.slowAckChan)
+	r.cs.newLeaderRPC =
+		r.RegisterRPC(new(MNewLeader), r.cs.newLeaderChan)
+	r.cs.newLeaderAckRPC =
+		r.RegisterRPC(new(MNewLeaderAck), r.cs.newLeaderAckChan)
+	r.cs.syncRPC =
+		r.RegisterRPC(new(MSync), r.cs.syncChan)
+	r.cs.syncAckRPC =
+		r.RegisterRPC(new(MSyncAck), r.cs.syncAckChan)
+	r.cs.flushRPC =
+		r.RegisterRPC(new(MFlush), r.cs.flushChan)
+*/
 
 	return &r
 }

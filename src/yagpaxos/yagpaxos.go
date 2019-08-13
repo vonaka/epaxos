@@ -17,17 +17,18 @@ type Replica struct {
 	status  int
 	qs      quorumSet
 
-	cmdDescs map[CommandId]*CommandDesc
+	cmdDescs map[CommandId]*commandDesc
+	info     map[state.Key]*keyInfo
 
 	cs CommunicationSupply
 }
 
-type CommandDesc struct {
+type commandDesc struct {
 	sync.Mutex
 
-	phase int
-	cmd   state.Command
-	//dep
+	phase   int
+	cmd     state.Command
+	dep     Dep
 	propose *genericsmr.Propose
 }
 
@@ -78,7 +79,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cballot: 0,
 		status:  FOLLOWER,
 
-		cmdDescs: make(map[CommandId]*CommandDesc),
+		cmdDescs: make(map[CommandId]*commandDesc),
+		info:     make(map[state.Key]*keyInfo),
 
 		cs: CommunicationSupply{
 			maxLatency: 0,
@@ -124,4 +126,41 @@ func NewReplica(replicaId int, peerAddrs []string,
 	*/
 
 	return &r
+}
+
+func (r *Replica) generateDepOf(cmd state.Command, cmdId CommandId) Dep {
+	info, exists := r.info[cmd.K]
+
+	if exists {
+		var cdep Dep
+
+		if cmd.Op == state.GET {
+			cdep = info.clientLastWrite
+		} else {
+			cdep = info.clientLastCmd
+		}
+
+		dep := make([]CommandId, len(cdep))
+		copy(dep, cdep)
+
+		return dep
+	} else {
+		return []CommandId{}
+	}
+}
+
+func (r *Replica) addCmdInfo(cmd state.Command, cmdId CommandId) {
+	info, exists := r.info[cmd.K]
+
+	if !exists {
+		info = &keyInfo{
+			clientLastWrite: []CommandId{},
+			clientLastCmd:   []CommandId{},
+			lastWriteIndex:  make(map[int32]int),
+			lastCmdIndex:    make(map[int32]int),
+		}
+		r.info[cmd.K] = info
+	}
+
+	info.add(cmd, cmdId)
 }

@@ -31,7 +31,8 @@ type commandDesc struct {
 	dep     Dep
 	propose *genericsmr.Propose
 
-	proposeCond *sync.Cond
+	proposeCond     *sync.Cond
+	fastAndSlowAcks *msgSet
 }
 
 // status
@@ -205,6 +206,23 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	desc.proposeCond.Broadcast()
 
 	desc.cmd = msg.Command
+
+	acceptFastAndSlowAck := func(msg interface{}) bool {
+		if desc.fastAndSlowAcks.leaderMsg == nil {
+			return true
+		}
+		switch leaderMsg := desc.fastAndSlowAcks.leaderMsg.(type) {
+		case *MFastAck:
+			return (Dep(leaderMsg.Dep)).Equals(msg.(*MFastAck).Dep)
+		case *MSlowAck:
+			return (Dep(leaderMsg.Dep)).Equals(msg.(*MSlowAck).Dep)
+		}
+
+		return false
+	}
+	desc.fastAndSlowAcks =
+		newMsgSet(WQ, acceptFastAndSlowAck, r.handleFastAndSlowAcks)
+
 	if !WQ.contains(r.Id) {
 		desc.phase = PAYLOAD_ONLY
 		r.Unlock()
@@ -233,6 +251,11 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 }
 
 func (r *Replica) handleFastAck(msg *MFastAck) {
+
+}
+
+func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
+	msgs []interface{}) {
 
 }
 

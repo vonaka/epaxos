@@ -30,6 +30,8 @@ type commandDesc struct {
 	cmd     state.Command
 	dep     Dep
 	propose *genericsmr.Propose
+
+	proposeCond *sync.Cond
 }
 
 // status
@@ -178,7 +180,56 @@ func (r *Replica) run() {
 }
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose) {
+	r.Lock()
 
+	WQ := r.qs.WQ(r.ballot)
+
+	cmdId := CommandId{
+		ClientId: msg.ClientId,
+		SeqNum:   msg.CommandId,
+	}
+
+	desc, exists := r.cmdDescs[cmdId]
+	if !exists {
+		desc = &commandDesc{}
+		desc.proposeCond = sync.NewCond(r)
+		r.cmdDescs[cmdId] = desc
+	}
+
+	if desc.propose != nil {
+		r.Unlock()
+		return
+	}
+
+	desc.propose = msg
+	desc.proposeCond.Broadcast()
+
+	desc.cmd = msg.Command
+	if !WQ.contains(r.Id) {
+		desc.phase = PAYLOAD_ONLY
+		r.Unlock()
+		return
+	}
+
+	if r.Id == leader(r.ballot, r.N) {
+		desc.phase = ACCEPT
+	} else {
+		desc.phase = PRE_ACCEPT
+	}
+
+	desc.dep = r.generateDepOf(desc.cmd, cmdId)
+	r.addCmdInfo(desc.cmd, cmdId)
+
+	fastAck := &MFastAck{
+		Replica: r.Id,
+		Ballot:  r.ballot,
+		CmdId:   cmdId,
+		Dep:     desc.dep,
+	}
+
+	r.sendToAll(fastAck, r.cs.fastAckRPC)
+	r.Unlock()
+	r.handleFastAck(fastAck)
 }
 
 func (r *Replica) handleFastAck(msg *MFastAck) {
@@ -244,4 +295,16 @@ func (r *Replica) addCmdInfo(cmd state.Command, cmdId CommandId) {
 	}
 
 	info.add(cmd, cmdId)
+}
+
+func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
+	for p := int32(0); p < int32(r.N); p++ {
+		r.M.Lock()
+		if r.Alive[p] {
+			r.M.Unlock()
+			r.SendMsg(p, rpc, msg)
+			r.M.Lock()
+		}
+		r.M.Unlock()
+	}
 }

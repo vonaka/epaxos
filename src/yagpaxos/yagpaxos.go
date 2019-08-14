@@ -108,22 +108,20 @@ func NewReplica(replicaId int, peerAddrs []string,
 
 	r.qs = newQuorumSet(r.N/2+1, r.N)
 
-	/*
-		r.cs.fastAckRPC =
-			r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
-		r.cs.slowAckRPC =
-			r.RegisterRPC(new(MSlowAck), r.cs.slowAckChan)
-		r.cs.newLeaderRPC =
-			r.RegisterRPC(new(MNewLeader), r.cs.newLeaderChan)
-		r.cs.newLeaderAckRPC =
-			r.RegisterRPC(new(MNewLeaderAck), r.cs.newLeaderAckChan)
-		r.cs.syncRPC =
-			r.RegisterRPC(new(MSync), r.cs.syncChan)
-		r.cs.syncAckRPC =
-			r.RegisterRPC(new(MSyncAck), r.cs.syncAckChan)
-		r.cs.flushRPC =
-			r.RegisterRPC(new(MFlush), r.cs.flushChan)
-	*/
+	r.cs.fastAckRPC =
+		r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
+	r.cs.slowAckRPC =
+		r.RegisterRPC(new(MSlowAck), r.cs.slowAckChan)
+	r.cs.newLeaderRPC =
+		r.RegisterRPC(new(MNewLeader), r.cs.newLeaderChan)
+	r.cs.newLeaderAckRPC =
+		r.RegisterRPC(new(MNewLeaderAck), r.cs.newLeaderAckChan)
+	r.cs.syncRPC =
+		r.RegisterRPC(new(MSync), r.cs.syncChan)
+	r.cs.syncAckRPC =
+		r.RegisterRPC(new(MSyncAck), r.cs.syncAckChan)
+	r.cs.flushRPC =
+		r.RegisterRPC(new(MFlush), r.cs.flushChan)
 
 	return &r
 }

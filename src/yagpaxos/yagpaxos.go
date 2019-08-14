@@ -18,7 +18,7 @@ type Replica struct {
 	qs      quorumSet
 
 	cmdDescs map[CommandId]*commandDesc
-	info     map[state.Key]*keyInfo
+	keysInfo map[state.Key]*keyInfo
 
 	cs CommunicationSupply
 }
@@ -80,7 +80,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		status:  FOLLOWER,
 
 		cmdDescs: make(map[CommandId]*commandDesc),
-		info:     make(map[state.Key]*keyInfo),
+		keysInfo: make(map[state.Key]*keyInfo),
 
 		cs: CommunicationSupply{
 			maxLatency: 0,
@@ -123,11 +123,94 @@ func NewReplica(replicaId int, peerAddrs []string,
 	r.cs.flushRPC =
 		r.RegisterRPC(new(MFlush), r.cs.flushChan)
 
+	go r.run()
+
 	return &r
 }
 
+func (r *Replica) run() {
+	r.ConnectToPeers()
+	latencies := r.ComputeClosestPeers()
+	for _, l := range latencies {
+		d := time.Duration(l*1000*1000) * time.Nanosecond
+		if d > r.cs.maxLatency {
+			r.cs.maxLatency = d
+		}
+	}
+
+	go r.WaitForClientConnections()
+
+	for !r.Shutdown {
+		select {
+
+		case propose := <-r.ProposeChan:
+			go r.handlePropose(propose)
+
+		case m := <-r.cs.fastAckChan:
+			fastAck := m.(*MFastAck)
+			go r.handleFastAck(fastAck)
+
+		case m := <-r.cs.slowAckChan:
+			slowAck := m.(*MSlowAck)
+			go r.handleSlowAck(slowAck)
+
+		case m := <-r.cs.newLeaderChan:
+			newLeader := m.(*MNewLeader)
+			go r.handleNewLeader(newLeader)
+
+		case m := <-r.cs.newLeaderAckChan:
+			newLeaderAck := m.(*MNewLeaderAck)
+			go r.handleNewLeaderAck(newLeaderAck)
+
+		case m := <-r.cs.syncChan:
+			sync := m.(*MSync)
+			go r.handleSync(sync)
+
+		case m := <-r.cs.syncAckChan:
+			syncAck := m.(*MSyncAck)
+			go r.handleSyncAck(syncAck)
+
+		case m := <-r.cs.flushChan:
+			flush := m.(*MFlush)
+			go r.handleFlush(flush)
+		}
+	}
+}
+
+func (r *Replica) handlePropose(msg *genericsmr.Propose) {
+
+}
+
+func (r *Replica) handleFastAck(msg *MFastAck) {
+
+}
+
+func (r *Replica) handleSlowAck(msg *MSlowAck) {
+
+}
+
+func (r *Replica) handleNewLeader(msg *MNewLeader) {
+
+}
+
+func (r *Replica) handleNewLeaderAck(msg *MNewLeaderAck) {
+
+}
+
+func (r *Replica) handleSync(msg *MSync) {
+
+}
+
+func (r *Replica) handleSyncAck(msg *MSyncAck) {
+
+}
+
+func (r *Replica) handleFlush(*MFlush) {
+
+}
+
 func (r *Replica) generateDepOf(cmd state.Command, cmdId CommandId) Dep {
-	info, exists := r.info[cmd.K]
+	info, exists := r.keysInfo[cmd.K]
 
 	if exists {
 		var cdep Dep
@@ -148,7 +231,7 @@ func (r *Replica) generateDepOf(cmd state.Command, cmdId CommandId) Dep {
 }
 
 func (r *Replica) addCmdInfo(cmd state.Command, cmdId CommandId) {
-	info, exists := r.info[cmd.K]
+	info, exists := r.keysInfo[cmd.K]
 
 	if !exists {
 		info = &keyInfo{
@@ -157,7 +240,7 @@ func (r *Replica) addCmdInfo(cmd state.Command, cmdId CommandId) {
 			lastWriteIndex:  make(map[int32]int),
 			lastCmdIndex:    make(map[int32]int),
 		}
-		r.info[cmd.K] = info
+		r.keysInfo[cmd.K] = info
 	}
 
 	info.add(cmd, cmdId)

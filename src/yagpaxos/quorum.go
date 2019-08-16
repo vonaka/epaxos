@@ -53,7 +53,6 @@ func (qs quorumSet) WQ(ballot int32) quorum {
 
 type msgSet struct {
 	q         quorum
-	ballot    int32
 	msgs      []interface{}
 	leaderMsg interface{}
 	accept    func(interface{}) bool
@@ -65,7 +64,6 @@ func newMsgSet(q quorum, ballot int32, accept func(interface{}) bool,
 
 	return &msgSet{
 		q:         q,
-		ballot:    ballot,
 		msgs:      []interface{}{},
 		leaderMsg: nil,
 		accept:    accept,
@@ -75,7 +73,7 @@ func newMsgSet(q quorum, ballot int32, accept func(interface{}) bool,
 
 func (ms *msgSet) add(repId int32, ballot int32,
 	isLeader bool, msg interface{}) {
-	if ballot != ms.ballot || !ms.q.contains(repId) {
+	if !ms.q.contains(repId) {
 		return
 	}
 
@@ -92,6 +90,8 @@ func (ms *msgSet) add(repId int32, ballot int32,
 		ms.msgs = append(ms.msgs, msg)
 	}
 
+	// TODO: do not call this each time
+	// (or maybe it's not that bad?)
 	go ms.handler(ms.leaderMsg, ms.msgs)
 }
 

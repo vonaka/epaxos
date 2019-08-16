@@ -1,8 +1,10 @@
 package yagpaxos
 
 import (
+	"dlog"
 	"fastrpc"
 	"genericsmr"
+	"genericsmrproto"
 	"state"
 	"sync"
 	"time"
@@ -17,8 +19,9 @@ type Replica struct {
 	status  int
 	qs      quorumSet
 
-	cmdDescs map[CommandId]*commandDesc
-	keysInfo map[state.Key]*keyInfo
+	cmdDescs  map[CommandId]*commandDesc
+	keysInfo  map[state.Key]*keyInfo
+	delivered map[CommandId]struct{}
 
 	cs CommunicationSupply
 }
@@ -33,6 +36,8 @@ type commandDesc struct {
 
 	cond            *sync.Cond
 	fastAndSlowAcks *msgSet
+
+	deliver func()
 }
 
 // status
@@ -82,8 +87,9 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cballot: 0,
 		status:  FOLLOWER,
 
-		cmdDescs: make(map[CommandId]*commandDesc),
-		keysInfo: make(map[state.Key]*keyInfo),
+		cmdDescs:  make(map[CommandId]*commandDesc),
+		keysInfo:  make(map[state.Key]*keyInfo),
+		delivered: make(map[CommandId]struct{}),
 
 		cs: CommunicationSupply{
 			maxLatency: 0,
@@ -350,6 +356,7 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 		}
 
 		desc.phase = COMMIT
+		desc.deliver()
 		desc.cond.Broadcast()
 	} else {
 		if leaderMsg == nil || len(msgs) != r.N/2 || r.status != FOLLOWER {
@@ -379,6 +386,7 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 
 		desc.phase = COMMIT
 		desc.dep = leaderFastAck.Dep
+		desc.deliver()
 		desc.cond.Broadcast()
 	}
 }
@@ -427,9 +435,51 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 
 			return false
 		}
+		deliver := func() {
+			_, delivered := r.delivered[cmdId]
+			if desc.phase != COMMIT || delivered || !r.Exec {
+				return
+			}
+
+			for _, cmdIdPrime := range desc.dep {
+				_, deliveredPrime := r.delivered[cmdIdPrime]
+				descPrime := r.getCmdDesc(cmdIdPrime)
+				for !deliveredPrime {
+					descPrime.cond.Wait()
+					_, delivered = r.delivered[cmdId]
+					if desc.phase != COMMIT || delivered || !r.Exec {
+						return
+					}
+					_, deliveredPrime = r.delivered[cmdIdPrime]
+				}
+			}
+
+			r.delivered[cmdId] = struct{}{}
+
+			if desc.cmd.Op == state.NONE {
+				return
+			}
+
+			dlog.Printf("Executing " + desc.cmd.String())
+			v := desc.cmd.Execute(r.State)
+
+			if !r.Dreply {
+				return
+			}
+
+			proposeReply := &genericsmrproto.ProposeReplyTS{
+				OK:        genericsmr.TRUE,
+				CommandId: desc.propose.CommandId,
+				Value:     v,
+				Timestamp: desc.propose.Timestamp,
+			}
+			r.ReplyProposeTS(proposeReply,
+				desc.propose.Reply, desc.propose.Mutex)
+		}
 		desc.fastAndSlowAcks =
 			newMsgSet(WQ, r.ballot, acceptFastAndSlowAck,
 				r.handleFastAndSlowAcks)
+		desc.deliver = deliver
 		r.cmdDescs[cmdId] = desc
 	}
 

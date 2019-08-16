@@ -229,20 +229,22 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 
 func (r *Replica) handleFastAck(msg *MFastAck) {
 	r.Lock()
-	defer r.Unlock()
 
 	if r.status != FOLLOWER || r.ballot != msg.Ballot {
+		r.Unlock()
 		return
 	}
 
 	desc := r.getCmdDesc(msg.CmdId)
 	if desc.phase == ACCEPT || desc.phase == COMMIT {
+		r.Unlock()
 		return
 	}
 
 	WQ := r.qs.WQ(r.ballot)
 	if !WQ.contains(r.ballot) || msg.Replica != r.leader() {
 		desc.fastAndSlowAcks.add(msg.Replica, msg.Replica == r.leader(), msg)
+		r.Unlock()
 		return
 	}
 
@@ -252,6 +254,7 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 			// Normally, this case is impossible but,
 			// it's always better to double-check
 			// that everything is fine
+			r.Unlock()
 			return
 		}
 	}

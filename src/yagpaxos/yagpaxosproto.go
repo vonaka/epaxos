@@ -56,6 +56,38 @@ func (dep1 Dep) Equals(dep2 Dep) bool {
 	return len(seen1) == len(seen2) && len(seen1) == 0
 }
 
+func (dep1 Dep) EqualsAndDiff(dep2 Dep) (bool, map[CommandId]struct{}) {
+	seen1 := make(map[CommandId]struct{})
+	seen2 := make(map[CommandId]struct{})
+
+	for i := 0; i < len(dep1) || i < len(dep2); i++ {
+		if i < len(dep1) && i < len(dep2) && dep1[i] == dep2[i] {
+			continue
+		}
+
+		if i < len(dep1) {
+			_, exists := seen2[dep1[i]]
+			if exists {
+				delete(seen2, dep1[i])
+			} else {
+				seen1[dep1[i]] = struct{}{}
+			}
+		}
+
+		if i < len(dep2) {
+			_, exists := seen1[dep2[i]]
+			if exists {
+				delete(seen1, dep2[i])
+			} else {
+				seen2[dep2[i]] = struct{}{}
+			}
+		}
+	}
+
+	return len(dep1) == len(dep2) && len(seen1) == len(seen2) &&
+		len(seen1) == 0, seen1
+}
+
 type keyInfo struct {
 	clientLastWrite []CommandId
 	clientLastCmd   []CommandId

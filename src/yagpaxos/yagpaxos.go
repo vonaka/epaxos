@@ -31,7 +31,7 @@ type commandDesc struct {
 	dep     Dep
 	propose *genericsmr.Propose
 
-	proposeCond     *sync.Cond
+	cond            *sync.Cond
 	fastAndSlowAcks *msgSet
 }
 
@@ -105,7 +105,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		},
 	}
 
-	if leader(r.ballot, r.N) == r.Id {
+	if r.leader() == r.Id {
 		r.status = LEADER
 	}
 
@@ -197,7 +197,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	}
 
 	desc.propose = msg
-	desc.proposeCond.Broadcast()
+	desc.cond.Broadcast()
 	desc.cmd = msg.Command
 
 	if !WQ.contains(r.Id) {
@@ -206,7 +206,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		return
 	}
 
-	if r.Id == leader(r.ballot, r.N) {
+	if r.Id == r.leader() {
 		desc.phase = ACCEPT
 	} else {
 		desc.phase = PRE_ACCEPT
@@ -228,15 +228,82 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 }
 
 func (r *Replica) handleFastAck(msg *MFastAck) {
+	r.Lock()
+	defer r.Unlock()
 
-}
+	if r.status != FOLLOWER || r.ballot != msg.Ballot {
+		return
+	}
 
-func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
-	msgs []interface{}) {
+	desc := r.getCmdDesc(msg.CmdId)
+	if desc.phase == ACCEPT || desc.phase == COMMIT {
+		return
+	}
 
+	WQ := r.qs.WQ(r.ballot)
+	if !WQ.contains(r.ballot) || msg.Replica != r.leader() {
+		desc.fastAndSlowAcks.add(msg.Replica, msg.Replica == r.leader(), msg)
+		return
+	}
+
+	for desc.phase != PRE_ACCEPT && desc.phase != PAYLOAD_ONLY {
+		desc.cond.Wait()
+		if desc.phase == ACCEPT || desc.phase == COMMIT {
+			// Normally, this case is impossible but,
+			// it's always better to double-check
+			// that everything is fine
+			return
+		}
+	}
+
+	// TODO: make sure that
+	//    ∀ id' ∈ d. phase[id'] ∈ {ACCEPT, COMMIT}
+
+	desc.phase = ACCEPT
+	desc.cond.Broadcast()
+
+	dep := Dep(msg.Dep)
+	equals, diff := desc.dep.EqualsAndDiff(dep)
+	if !equals {
+		for cmdIdPrime := range diff {
+			descPrime := r.getCmdDesc(cmdIdPrime)
+			descPrime.phase = PAYLOAD_ONLY
+			descPrime.cond.Broadcast()
+		}
+		desc.dep = dep
+
+		slowAck := &MSlowAck{
+			Replica: r.Id,
+			Ballot:  r.ballot,
+			CmdId:   msg.CmdId,
+			Dep:     desc.dep,
+		}
+
+		r.sendToAll(slowAck, r.cs.slowAckRPC)
+		r.Unlock()
+		r.handleSlowAck(slowAck)
+	}
 }
 
 func (r *Replica) handleSlowAck(msg *MSlowAck) {
+	r.Lock()
+	defer r.Unlock()
+
+	if (r.status != FOLLOWER && r.status != LEADER) || r.ballot != msg.Ballot {
+		return
+	}
+
+	desc := r.getCmdDesc(msg.CmdId)
+	if desc.phase == COMMIT {
+		return
+	}
+
+	desc.fastAndSlowAcks.add(msg.Replica, msg.Replica == r.leader(), msg)
+}
+
+
+func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
+	msgs []interface{}) {
 
 }
 
@@ -260,11 +327,17 @@ func (r *Replica) handleFlush(*MFlush) {
 
 }
 
+
+func (r *Replica) leader() int32 {
+	return leader(r.ballot, r.N)
+}
+
 func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
+	WQ := r.qs.WQ(r.ballot)
 	desc, exists := r.cmdDescs[cmdId]
 	if !exists {
 		desc = &commandDesc{}
-		desc.proposeCond = sync.NewCond(r)
+		desc.cond = sync.NewCond(r)
 		acceptFastAndSlowAck := func(msg interface{}) bool {
 			if desc.fastAndSlowAcks.leaderMsg == nil {
 				return true
@@ -273,13 +346,14 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 			case *MFastAck:
 				return (Dep(leaderMsg.Dep)).Equals(msg.(*MFastAck).Dep)
 			case *MSlowAck:
-				return (Dep(leaderMsg.Dep)).Equals(msg.(*MSlowAck).Dep)
+				return WQ.contains(r.Id) ||
+					(Dep(leaderMsg.Dep)).Equals(msg.(*MSlowAck).Dep)
 			}
 
 			return false
 		}
 		desc.fastAndSlowAcks =
-			newMsgSet(r.qs.WQ(r.ballot), acceptFastAndSlowAck,
+			newMsgSet(WQ, acceptFastAndSlowAck,
 				r.handleFastAndSlowAcks)
 		r.cmdDescs[cmdId] = desc
 	}

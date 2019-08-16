@@ -190,13 +190,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 		SeqNum:   msg.CommandId,
 	}
 
-	desc, exists := r.cmdDescs[cmdId]
-	if !exists {
-		desc = &commandDesc{}
-		desc.proposeCond = sync.NewCond(r)
-		r.cmdDescs[cmdId] = desc
-	}
-
+	desc := r.getCmdDesc(cmdId)
 	if desc.propose != nil {
 		r.Unlock()
 		return
@@ -204,24 +198,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 
 	desc.propose = msg
 	desc.proposeCond.Broadcast()
-
 	desc.cmd = msg.Command
-
-	acceptFastAndSlowAck := func(msg interface{}) bool {
-		if desc.fastAndSlowAcks.leaderMsg == nil {
-			return true
-		}
-		switch leaderMsg := desc.fastAndSlowAcks.leaderMsg.(type) {
-		case *MFastAck:
-			return (Dep(leaderMsg.Dep)).Equals(msg.(*MFastAck).Dep)
-		case *MSlowAck:
-			return (Dep(leaderMsg.Dep)).Equals(msg.(*MSlowAck).Dep)
-		}
-
-		return false
-	}
-	desc.fastAndSlowAcks =
-		newMsgSet(WQ, acceptFastAndSlowAck, r.handleFastAndSlowAcks)
 
 	if !WQ.contains(r.Id) {
 		desc.phase = PAYLOAD_ONLY
@@ -281,6 +258,33 @@ func (r *Replica) handleSyncAck(msg *MSyncAck) {
 
 func (r *Replica) handleFlush(*MFlush) {
 
+}
+
+func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
+	desc, exists := r.cmdDescs[cmdId]
+	if !exists {
+		desc = &commandDesc{}
+		desc.proposeCond = sync.NewCond(r)
+		acceptFastAndSlowAck := func(msg interface{}) bool {
+			if desc.fastAndSlowAcks.leaderMsg == nil {
+				return true
+			}
+			switch leaderMsg := desc.fastAndSlowAcks.leaderMsg.(type) {
+			case *MFastAck:
+				return (Dep(leaderMsg.Dep)).Equals(msg.(*MFastAck).Dep)
+			case *MSlowAck:
+				return (Dep(leaderMsg.Dep)).Equals(msg.(*MSlowAck).Dep)
+			}
+
+			return false
+		}
+		desc.fastAndSlowAcks =
+			newMsgSet(r.qs.WQ(r.ballot), acceptFastAndSlowAck,
+				r.handleFastAndSlowAcks)
+		r.cmdDescs[cmdId] = desc
+	}
+
+	return desc
 }
 
 func (r *Replica) generateDepOf(cmd state.Command, cmdId CommandId) Dep {

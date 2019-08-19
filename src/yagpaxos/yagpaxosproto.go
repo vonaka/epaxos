@@ -141,6 +141,12 @@ type MSlowAck struct {
 	Dep     []CommandId
 }
 
+type MLightSlowAck struct {
+	Replica int32
+	Ballot  int32
+	CmdId   CommandId
+}
+
 type MNewLeader struct {
 	Replica int32
 	Ballot  int32
@@ -179,6 +185,10 @@ func (m *MFastAck) New() fastrpc.Serializable {
 
 func (m *MSlowAck) New() fastrpc.Serializable {
 	return new(MSlowAck)
+}
+
+func (m *MLightSlowAck) New() fastrpc.Serializable {
+	return new(MLightSlowAck)
 }
 
 func (m *MNewLeader) New() fastrpc.Serializable {
@@ -248,6 +258,68 @@ func inConflict(c1, c2 state.Command) bool {
 type byteReader interface {
 	io.Reader
 	ReadByte() (c byte, err error)
+}
+
+func (t *MFlush) BinarySize() (nbytes int, sizeKnown bool) {
+	return 8, true
+}
+
+type MFlushCache struct {
+	mu    sync.Mutex
+	cache []*MFlush
+}
+
+func NewMFlushCache() *MFlushCache {
+	c := &MFlushCache{}
+	c.cache = make([]*MFlush, 0)
+	return c
+}
+
+func (p *MFlushCache) Get() *MFlush {
+	var t *MFlush
+	p.mu.Lock()
+	if len(p.cache) > 0 {
+		t = p.cache[len(p.cache)-1]
+		p.cache = p.cache[0:(len(p.cache) - 1)]
+	}
+	p.mu.Unlock()
+	if t == nil {
+		t = &MFlush{}
+	}
+	return t
+}
+func (p *MFlushCache) Put(t *MFlush) {
+	p.mu.Lock()
+	p.cache = append(p.cache, t)
+	p.mu.Unlock()
+}
+func (t *MFlush) Marshal(wire io.Writer) {
+	var b [8]byte
+	var bs []byte
+	bs = b[:8]
+	tmp32 := t.Replica
+	bs[0] = byte(tmp32)
+	bs[1] = byte(tmp32 >> 8)
+	bs[2] = byte(tmp32 >> 16)
+	bs[3] = byte(tmp32 >> 24)
+	tmp32 = t.Ballot
+	bs[4] = byte(tmp32)
+	bs[5] = byte(tmp32 >> 8)
+	bs[6] = byte(tmp32 >> 16)
+	bs[7] = byte(tmp32 >> 24)
+	wire.Write(bs)
+}
+
+func (t *MFlush) Unmarshal(wire io.Reader) error {
+	var b [8]byte
+	var bs []byte
+	bs = b[:8]
+	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
+		return err
+	}
+	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	return nil
 }
 
 func (t *CommandId) BinarySize() (nbytes int, sizeKnown bool) {
@@ -542,6 +614,80 @@ func (t *MSlowAck) Unmarshal(rr io.Reader) error {
 	return nil
 }
 
+func (t *MLightSlowAck) BinarySize() (nbytes int, sizeKnown bool) {
+	return 16, true
+}
+
+type MLightSlowAckCache struct {
+	mu    sync.Mutex
+	cache []*MLightSlowAck
+}
+
+func NewMLightSlowAckCache() *MLightSlowAckCache {
+	c := &MLightSlowAckCache{}
+	c.cache = make([]*MLightSlowAck, 0)
+	return c
+}
+
+func (p *MLightSlowAckCache) Get() *MLightSlowAck {
+	var t *MLightSlowAck
+	p.mu.Lock()
+	if len(p.cache) > 0 {
+		t = p.cache[len(p.cache)-1]
+		p.cache = p.cache[0:(len(p.cache) - 1)]
+	}
+	p.mu.Unlock()
+	if t == nil {
+		t = &MLightSlowAck{}
+	}
+	return t
+}
+func (p *MLightSlowAckCache) Put(t *MLightSlowAck) {
+	p.mu.Lock()
+	p.cache = append(p.cache, t)
+	p.mu.Unlock()
+}
+func (t *MLightSlowAck) Marshal(wire io.Writer) {
+	var b [16]byte
+	var bs []byte
+	bs = b[:16]
+	tmp32 := t.Replica
+	bs[0] = byte(tmp32)
+	bs[1] = byte(tmp32 >> 8)
+	bs[2] = byte(tmp32 >> 16)
+	bs[3] = byte(tmp32 >> 24)
+	tmp32 = t.Ballot
+	bs[4] = byte(tmp32)
+	bs[5] = byte(tmp32 >> 8)
+	bs[6] = byte(tmp32 >> 16)
+	bs[7] = byte(tmp32 >> 24)
+	tmp32 = t.CmdId.ClientId
+	bs[8] = byte(tmp32)
+	bs[9] = byte(tmp32 >> 8)
+	bs[10] = byte(tmp32 >> 16)
+	bs[11] = byte(tmp32 >> 24)
+	tmp32 = t.CmdId.SeqNum
+	bs[12] = byte(tmp32)
+	bs[13] = byte(tmp32 >> 8)
+	bs[14] = byte(tmp32 >> 16)
+	bs[15] = byte(tmp32 >> 24)
+	wire.Write(bs)
+}
+
+func (t *MLightSlowAck) Unmarshal(wire io.Reader) error {
+	var b [16]byte
+	var bs []byte
+	bs = b[:16]
+	if _, err := io.ReadAtLeast(wire, bs, 16); err != nil {
+		return err
+	}
+	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
+	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
+	t.CmdId.ClientId = int32((uint32(bs[8]) | (uint32(bs[9]) << 8) | (uint32(bs[10]) << 16) | (uint32(bs[11]) << 24)))
+	t.CmdId.SeqNum = int32((uint32(bs[12]) | (uint32(bs[13]) << 8) | (uint32(bs[14]) << 16) | (uint32(bs[15]) << 24)))
+	return nil
+}
+
 func (t *MNewLeader) BinarySize() (nbytes int, sizeKnown bool) {
 	return 8, true
 }
@@ -655,68 +801,6 @@ func (t *MSyncAck) Marshal(wire io.Writer) {
 }
 
 func (t *MSyncAck) Unmarshal(wire io.Reader) error {
-	var b [8]byte
-	var bs []byte
-	bs = b[:8]
-	if _, err := io.ReadAtLeast(wire, bs, 8); err != nil {
-		return err
-	}
-	t.Replica = int32((uint32(bs[0]) | (uint32(bs[1]) << 8) | (uint32(bs[2]) << 16) | (uint32(bs[3]) << 24)))
-	t.Ballot = int32((uint32(bs[4]) | (uint32(bs[5]) << 8) | (uint32(bs[6]) << 16) | (uint32(bs[7]) << 24)))
-	return nil
-}
-
-func (t *MFlush) BinarySize() (nbytes int, sizeKnown bool) {
-	return 8, true
-}
-
-type MFlushCache struct {
-	mu    sync.Mutex
-	cache []*MFlush
-}
-
-func NewMFlushCache() *MFlushCache {
-	c := &MFlushCache{}
-	c.cache = make([]*MFlush, 0)
-	return c
-}
-
-func (p *MFlushCache) Get() *MFlush {
-	var t *MFlush
-	p.mu.Lock()
-	if len(p.cache) > 0 {
-		t = p.cache[len(p.cache)-1]
-		p.cache = p.cache[0:(len(p.cache) - 1)]
-	}
-	p.mu.Unlock()
-	if t == nil {
-		t = &MFlush{}
-	}
-	return t
-}
-func (p *MFlushCache) Put(t *MFlush) {
-	p.mu.Lock()
-	p.cache = append(p.cache, t)
-	p.mu.Unlock()
-}
-func (t *MFlush) Marshal(wire io.Writer) {
-	var b [8]byte
-	var bs []byte
-	bs = b[:8]
-	tmp32 := t.Replica
-	bs[0] = byte(tmp32)
-	bs[1] = byte(tmp32 >> 8)
-	bs[2] = byte(tmp32 >> 16)
-	bs[3] = byte(tmp32 >> 24)
-	tmp32 = t.Ballot
-	bs[4] = byte(tmp32)
-	bs[5] = byte(tmp32 >> 8)
-	bs[6] = byte(tmp32 >> 16)
-	bs[7] = byte(tmp32 >> 24)
-	wire.Write(bs)
-}
-
-func (t *MFlush) Unmarshal(wire io.Reader) error {
 	var b [8]byte
 	var bs []byte
 	bs = b[:8]

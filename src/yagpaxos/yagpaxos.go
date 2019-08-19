@@ -61,6 +61,7 @@ type CommunicationSupply struct {
 
 	fastAckChan      chan fastrpc.Serializable
 	slowAckChan      chan fastrpc.Serializable
+	lightSlowAckChan chan fastrpc.Serializable
 	newLeaderChan    chan fastrpc.Serializable
 	newLeaderAckChan chan fastrpc.Serializable
 	syncChan         chan fastrpc.Serializable
@@ -69,6 +70,7 @@ type CommunicationSupply struct {
 
 	fastAckRPC      uint8
 	slowAckRPC      uint8
+	lightSlowAckRPC uint8
 	newLeaderRPC    uint8
 	newLeaderAckRPC uint8
 	syncRPC         uint8
@@ -98,6 +100,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 			slowAckChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
+			lightSlowAckChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
 			newLeaderChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 			newLeaderAckChan: make(chan fastrpc.Serializable,
@@ -121,6 +125,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
 	r.cs.slowAckRPC =
 		r.RegisterRPC(new(MSlowAck), r.cs.slowAckChan)
+	r.cs.lightSlowAckRPC =
+		r.RegisterRPC(new(MLightSlowAck), r.cs.lightSlowAckChan)
 	r.cs.newLeaderRPC =
 		r.RegisterRPC(new(MNewLeader), r.cs.newLeaderChan)
 	r.cs.newLeaderAckRPC =
@@ -162,6 +168,10 @@ func (r *Replica) run() {
 		case m := <-r.cs.slowAckChan:
 			slowAck := m.(*MSlowAck)
 			go r.handleSlowAck(slowAck)
+
+		case m := <-r.cs.lightSlowAckChan:
+			lightSlowAck := m.(*MLightSlowAck)
+			go r.handleLightSlowAck(lightSlowAck)
 
 		case m := <-r.cs.newLeaderChan:
 			newLeader := m.(*MNewLeader)
@@ -236,16 +246,16 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 func (r *Replica) handleFastAck(msg *MFastAck) {
 	r.Lock()
 
-	if msg.Replica == r.leader() {
+	if msg.Replica == r.leader() && r.qs.WQ(r.ballot).contains(r.Id) {
 		r.Unlock()
-		r.fastAckFromLeader(msg)
+		r.fastAckFromLeaderToWQ(msg)
 	} else {
 		r.Unlock()
-		r.fastAckFromFollower(msg)
+		r.commonCaseFastAck(msg)
 	}
 }
 
-func (r *Replica) fastAckFromLeader(msg *MFastAck) {
+func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 	r.Lock()
 
 	if r.status != FOLLOWER || r.ballot != msg.Ballot {
@@ -291,9 +301,16 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck) {
 			Dep:     desc.dep,
 		}
 
-		r.sendToAll(slowAck, r.cs.slowAckRPC)
+		lightSlowAck := &MLightSlowAck{
+			Replica: r.Id,
+			Ballot:  r.ballot,
+			CmdId:   msg.CmdId,
+		}
+
+		r.sendExcept(r.qs.WQ(r.ballot), slowAck, r.cs.slowAckRPC)
+		r.sendTo(r.qs.WQ(r.ballot), lightSlowAck, r.cs.lightSlowAckRPC)
 		r.Unlock()
-		r.handleSlowAck(slowAck)
+		r.handleLightSlowAck(lightSlowAck)
 
 		return
 	}
@@ -301,7 +318,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck) {
 	r.Unlock()
 }
 
-func (r *Replica) fastAckFromFollower(msg *MFastAck) {
+func (r *Replica) commonCaseFastAck(msg *MFastAck) {
 	r.Lock()
 	defer r.Unlock()
 
@@ -319,7 +336,25 @@ func (r *Replica) fastAckFromFollower(msg *MFastAck) {
 }
 
 func (r *Replica) handleSlowAck(msg *MSlowAck) {
-	r.handleFastAck((*MFastAck)(msg))
+	r.commonCaseFastAck((*MFastAck)(msg))
+}
+
+func (r *Replica) handleLightSlowAck(msg *MLightSlowAck) {
+	r.Lock()
+
+	if r.qs.WQ(r.ballot).contains(r.Id) {
+		r.Unlock()
+		r.commonCaseFastAck(&MFastAck{
+			Replica: msg.Replica,
+			Ballot:  msg.Ballot,
+			CmdId:   msg.CmdId,
+			Dep:     nil,
+		})
+
+		return
+	}
+
+	r.Unlock()
 }
 
 func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
@@ -427,10 +462,13 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 			}
 			switch leaderMsg := desc.fastAndSlowAcks.leaderMsg.(type) {
 			case *MFastAck:
-				return (Dep(leaderMsg.Dep)).Equals(msg.(*MFastAck).Dep)
+				return msg.(*MFastAck).Dep == nil ||
+					(Dep(leaderMsg.Dep)).Equals(msg.(*MFastAck).Dep)
 			case *MSlowAck:
 				return WQ.contains(r.Id) ||
 					(Dep(leaderMsg.Dep)).Equals(msg.(*MSlowAck).Dep)
+			case *MLightSlowAck:
+				return WQ.contains(r.Id)
 			}
 
 			return false
@@ -525,6 +563,36 @@ func (r *Replica) addCmdInfo(cmd state.Command, cmdId CommandId) {
 
 func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
 	for p := int32(0); p < int32(r.N); p++ {
+		r.M.Lock()
+		if r.Alive[p] {
+			r.M.Unlock()
+			r.SendMsg(p, rpc, msg)
+			r.M.Lock()
+		}
+		r.M.Unlock()
+	}
+}
+
+func (r *Replica) sendTo(q quorum, msg fastrpc.Serializable, rpc uint8) {
+	for p := int32(0); p < int32(r.N); p++ {
+		if !q.contains(p) {
+			continue
+		}
+		r.M.Lock()
+		if r.Alive[p] {
+			r.M.Unlock()
+			r.SendMsg(p, rpc, msg)
+			r.M.Lock()
+		}
+		r.M.Unlock()
+	}
+}
+
+func (r *Replica) sendExcept(q quorum, msg fastrpc.Serializable, rpc uint8) {
+	for p := int32(0); p < int32(r.N); p++ {
+		if q.contains(p) {
+			continue
+		}
 		r.M.Lock()
 		if r.Alive[p] {
 			r.M.Unlock()

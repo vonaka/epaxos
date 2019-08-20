@@ -22,6 +22,7 @@ type Replica struct {
 	cmdDescs  map[CommandId]*commandDesc
 	keysInfo  map[state.Key]*keyInfo
 	delivered map[CommandId]struct{}
+	trash     map[CommandId]struct{}
 
 	cs CommunicationSupply
 }
@@ -36,6 +37,7 @@ type commandDesc struct {
 
 	cond            *sync.Cond
 	fastAndSlowAcks *msgSet
+	collectMsgs     *msgSet
 
 	deliver func()
 }
@@ -78,6 +80,8 @@ type CommunicationSupply struct {
 	flushRPC        uint8
 }
 
+const TRASH_SIZE = 500
+
 func NewReplica(replicaId int, peerAddrs []string,
 	thrifty, exec, lread, dreply bool) *Replica {
 
@@ -92,6 +96,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cmdDescs:  make(map[CommandId]*commandDesc),
 		keysInfo:  make(map[state.Key]*keyInfo),
 		delivered: make(map[CommandId]struct{}),
+		trash:     make(map[CommandId]struct{}, TRASH_SIZE),
 
 		cs: CommunicationSupply{
 			maxLatency: 0,
@@ -426,6 +431,10 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 	}
 }
 
+func (r *Replica) handleCollects(leaderMsg interface{}, msgs []interface{}) {
+
+}
+
 func (r *Replica) handleNewLeader(msg *MNewLeader) {
 
 }
@@ -456,6 +465,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 	if !exists {
 		desc = &commandDesc{}
 		desc.cond = sync.NewCond(r)
+
 		acceptFastAndSlowAck := func(msg interface{}) bool {
 			if desc.fastAndSlowAcks.leaderMsg == nil {
 				return true
@@ -473,7 +483,15 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 
 			return false
 		}
-		deliver := func() {
+		desc.fastAndSlowAcks =
+			newMsgSet(WQ, acceptFastAndSlowAck, r.handleFastAndSlowAcks)
+
+		desc.collectMsgs = newMsgSet(newQuorumOfAll(r.N),
+			func(interface{}) bool {
+				return true
+			}, r.handleCollects)
+
+		desc.deliver = func() {
 			_, delivered := r.delivered[cmdId]
 			if desc.phase != COMMIT || delivered || !r.Exec {
 				return
@@ -514,10 +532,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 			r.ReplyProposeTS(proposeReply,
 				desc.propose.Reply, desc.propose.Mutex)
 		}
-		desc.fastAndSlowAcks =
-			newMsgSet(WQ, r.ballot, acceptFastAndSlowAck,
-				r.handleFastAndSlowAcks)
-		desc.deliver = deliver
+
 		r.cmdDescs[cmdId] = desc
 	}
 

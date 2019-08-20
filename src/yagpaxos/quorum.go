@@ -10,6 +10,16 @@ func newQuorum(size int) quorum {
 	return make(map[int32]struct{}, size)
 }
 
+func newQuorumOfAll(size int) quorum {
+	q := newQuorum(size)
+
+	for i := int32(0); i < int32(size); i++ {
+		q[i] = struct{}{}
+	}
+
+	return q
+}
+
 func (q quorum) contains(repId int32) bool {
 	_, exists := q[repId]
 	return exists
@@ -59,7 +69,7 @@ type msgSet struct {
 	handler   func(interface{}, []interface{})
 }
 
-func newMsgSet(q quorum, ballot int32, accept func(interface{}) bool,
+func newMsgSet(q quorum, accept func(interface{}) bool,
 	handler func(interface{}, []interface{})) *msgSet {
 
 	return &msgSet{

@@ -826,6 +826,9 @@ func (r *Replica) executeCommands() {
 
 			if r.instanceSpace[i].status != COMMITTED {
 				if !r.instanceSpace[i].skipped {
+					if r.instanceSpace[i].command == nil {
+						break
+					}
 					confInst, present := conflicts[r.instanceSpace[i].command.K]
 					if present && r.instanceSpace[confInst].status != EXECUTED {
 						break

@@ -83,11 +83,11 @@ type CommunicationSupply struct {
 const TRASH_SIZE = 500
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply bool) *Replica {
+	thrifty, exec, lread, dreply bool, failures int) *Replica {
 
 	r := Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
-			thrifty, exec, lread, dreply),
+			thrifty, exec, lread, dreply, failures),
 
 		ballot:  0,
 		cballot: 0,

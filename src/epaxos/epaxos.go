@@ -35,6 +35,7 @@ const HT_INIT_SIZE = 200000
 // - remove checkpoints (need to fix them first)
 // - remove short commits (with N>7 propagating committed dependencies is necessary)
 // - must run with thriftiness on (recovery is incorrect otherwise)
+// - when conflicts are transitive skip waiting prior commuting commands
 
 var cpMarker []state.Command
 var cpcounter = 0
@@ -75,6 +76,7 @@ type Replica struct {
 	IsLeader              bool // does this replica think it is the leader
 	maxRecvBallot         int32
 	batchWait             int
+	transconf             bool
 }
 
 type Instance struct {
@@ -118,9 +120,9 @@ type LeaderBookkeeping struct {
 	leaderResponded   bool
 }
 
-func NewReplica(id int, peerAddrList []string, thrifty bool, exec bool, lread bool, dreply bool, beacon bool, durable bool, batchWait int) *Replica {
+func NewReplica(id int, peerAddrList []string, thrifty bool, exec bool, lread bool, dreply bool, beacon bool, durable bool, batchWait int, transconf bool, failures int) *Replica {
 	r := &Replica{
-		genericsmr.NewReplica(id, peerAddrList, thrifty, exec, lread, dreply),
+		genericsmr.NewReplica(id, peerAddrList, thrifty, exec, lread, dreply, failures),
 		make(chan fastrpc.Serializable, genericsmr.CHAN_BUFFER_SIZE),
 		make(chan fastrpc.Serializable, genericsmr.CHAN_BUFFER_SIZE),
 		make(chan fastrpc.Serializable, genericsmr.CHAN_BUFFER_SIZE),
@@ -146,7 +148,8 @@ func NewReplica(id int, peerAddrList []string, thrifty bool, exec bool, lread bo
 		make(chan *instanceId, genericsmr.CHAN_BUFFER_SIZE),
 		false,
 		-1,
-		batchWait}
+		batchWait,
+		transconf}
 
 	r.Beacon = beacon
 	r.Durable = durable
@@ -549,7 +552,7 @@ func (r *Replica) bcastPreAccept(replica int32, instance int32) {
 
 	n := r.N - 1
 	if r.Thrifty {
-		n = r.fastQuorumSize() - 1
+		n = r.Replica.FastQuorumSize() - 1
 	}
 
 	sent := 0
@@ -974,7 +977,7 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 
 	precondition := inst.lb.allEqual && allCommitted && isInitialBallot
 
-	if inst.lb.preAcceptOKs >= (r.fastQuorumSize()-1) && precondition {
+	if inst.lb.preAcceptOKs >= (r.Replica.FastQuorumSize()-1) && precondition {
 		dlog.Printf("Fast path %d.%d, w. deps %d\n", pareply.Replica, pareply.Instance, pareply.Deps)
 		lb.status = epaxosproto.COMMITTED
 
@@ -1009,7 +1012,7 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 			r.Stats.M["totalCommitTime"] += int(time.Now().UnixNano() - inst.proposeTime)
 		}
 		r.M.Unlock()
-	} else if inst.lb.preAcceptOKs >= r.fastQuorumSize()-1 {
+	} else if inst.lb.preAcceptOKs >= r.Replica.FastQuorumSize()-1 {
 		// } else if inst.lb.preAcceptOKs >= r.N/2 && !precondition {
 		dlog.Printf("Slow path %d.%d (inst.lb.allEqual=%t, allCommitted=%t, isInitialBallot=%t)\n", pareply.Replica, pareply.Instance, allEqual, allCommitted, isInitialBallot)
 		lb.status = epaxosproto.ACCEPTED
@@ -1031,7 +1034,7 @@ func (r *Replica) handlePreAcceptReply(pareply *epaxosproto.PreAcceptReply) {
 		}
 		r.M.Unlock()
 	} else {
-		dlog.Printf("Not enough pre-accept replies in %d.%d (preAcceptOk=%d, slowQuorumSize=%d, precondition=%t)\n", pareply.Replica, pareply.Instance, lb.preAcceptOKs, r.slowQuorumSize(), precondition)
+		dlog.Printf("Not enough pre-accept replies in %d.%d (preAcceptOk=%d, slowQuorumSize=%d, precondition=%t)\n", pareply.Replica, pareply.Instance, lb.preAcceptOKs, r.Replica.SlowQuorumSize(), precondition)
 	}
 }
 
@@ -1311,7 +1314,7 @@ func (r *Replica) handlePrepareReply(preply *epaxosproto.PrepareReply) {
 	}
 
 	lb.prepareReplies = append(lb.prepareReplies, preply)
-	if len(lb.prepareReplies) < r.slowQuorumSize() {
+	if len(lb.prepareReplies) < r.Replica.SlowQuorumSize() {
 		dlog.Println("Not enough")
 		return
 	}
@@ -1359,11 +1362,11 @@ func (r *Replica) handlePrepareReply(preply *epaxosproto.PrepareReply) {
 				}
 			}
 		}
-		if preAcceptCount >= r.slowQuorumSize()-1 && !lb.leaderResponded && allEqual {
+		if preAcceptCount >= r.Replica.SlowQuorumSize()-1 && !lb.leaderResponded && allEqual {
 			subCase = 3
-		} else if preAcceptCount >= r.f()/2 && !lb.leaderResponded && allEqual {
+		} else if preAcceptCount >= r.Replica.SlowQuorumSize()-1 && !lb.leaderResponded && allEqual {
 			subCase = 4
-		} else if preAcceptCount > 0 && (lb.leaderResponded || !allEqual || preAcceptCount < r.f()/2) {
+		} else if preAcceptCount > 0 && (lb.leaderResponded || !allEqual || preAcceptCount < r.Replica.SlowQuorumSize()-1) {
 			subCase = 5
 		} else {
 			panic("Cannot occur")
@@ -1378,7 +1381,7 @@ func (r *Replica) handlePrepareReply(preply *epaxosproto.PrepareReply) {
 		dlog.Printf("In %d.%d, sub-case %d\n", preply.Replica, preply.Instance, subCase)
 	} else {
 		dlog.Printf("In %d.%d, sub-case %d with (leaderResponded=%t, allEqual=%t, enough=%t)\n",
-			preply.Replica, preply.Instance, subCase, lb.leaderResponded, allEqual, preAcceptCount < r.f()/2)
+			preply.Replica, preply.Instance, subCase, lb.leaderResponded, allEqual, preAcceptCount < r.Replica.SlowQuorumSize()-1)
 	}
 
 	inst.Cmds = lb.cmds
@@ -1546,7 +1549,7 @@ func (r *Replica) handleTryPreAcceptReply(tpar *epaxosproto.TryPreAcceptReply) {
 
 	lb.tpaAccepted = lb.tpaAccepted || (tpar.ConflictStatus >= epaxosproto.ACCEPTED) // TLA spec. (page 39)
 
-	if lb.tpaReps >= r.slowQuorumSize()-1 && lb.tpaAccepted {
+	if lb.tpaReps >= r.Replica.SlowQuorumSize()-1 && lb.tpaAccepted {
 		//abandon recovery, restart from phase 1
 		dlog.Printf("Abandon recovery in %d.%d restart phase1 \n", tpar.Replica, tpar.Instance)
 		lb.tryingToPreAccept = false
@@ -1604,18 +1607,6 @@ func deferredByInstance(q int32, i int32) (bool, int32, int32) {
 	dq := int32(daux >> 32)
 	di := int32(daux)
 	return true, dq, di
-}
-
-func (r *Replica) fastQuorumSize() int {
-	return r.f() + (r.f()+1)/2
-}
-
-func (r *Replica) slowQuorumSize() int {
-	return r.f() + 1
-}
-
-func (r *Replica) f() int {
-	return r.N / 2
 }
 
 func (r *Replica) newInstanceDefault(replica int32, instance int32) *Instance {

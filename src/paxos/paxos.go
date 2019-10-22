@@ -76,8 +76,8 @@ type LeaderBookkeeping struct {
 	lastTriedBallot int32           // highest ballot tried so far
 }
 
-func NewReplica(id int, peerAddrList []string, Isleader bool, thrifty bool, exec bool, lread bool, dreply bool, durable bool, batchWait int) *Replica {
-	r := &Replica{genericsmr.NewReplica(id, peerAddrList, thrifty, exec, lread, dreply),
+func NewReplica(id int, peerAddrList []string, Isleader bool, thrifty bool, exec bool, lread bool, dreply bool, durable bool, batchWait int, f int) *Replica {
+	r := &Replica{genericsmr.NewReplica(id, peerAddrList, thrifty, exec, lread, dreply, f),
 		make(chan fastrpc.Serializable, genericsmr.CHAN_BUFFER_SIZE),
 		make(chan fastrpc.Serializable, genericsmr.CHAN_BUFFER_SIZE),
 		make(chan fastrpc.Serializable, genericsmr.CHAN_BUFFER_SIZE),
@@ -301,9 +301,6 @@ func (r *Replica) bcastPrepare(instance int32) {
 	args := &paxosproto.Prepare{r.Id, instance, r.instanceSpace[instance].lb.lastTriedBallot}
 
 	n := r.N - 1
-	if r.Thrifty {
-		n = r.N >> 1
-	}
 
 	sent := 0
 	for q := 0; q < r.N-1; q++ {
@@ -334,9 +331,6 @@ func (r *Replica) bcastAccept(instance int32) {
 	args := &pa
 
 	n := r.N - 1
-	if r.Thrifty {
-		n = r.N >> 1
-	}
 
 	sent := 0
 	for q := 0; q < r.N-1; q++ {
@@ -365,7 +359,7 @@ func (r *Replica) bcastCommit(instance int32, ballot int32, command []state.Comm
 	pc.Instance = instance
 	pc.Ballot = ballot
 	pc.Command = command
-	args := &pc
+
 	pcs.LeaderId = r.Id
 	pcs.Instance = instance
 	pcs.Ballot = ballot
@@ -377,11 +371,7 @@ func (r *Replica) bcastCommit(instance int32, ballot int32, command []state.Comm
 		if !r.Alive[r.PreferredPeerOrder[q]] {
 			continue
 		}
-		if sent < (r.N >> 1) {
-			r.SendMsg(r.PreferredPeerOrder[q], r.commitShortRPC, argsShort)
-		} else {
-			r.SendMsg(r.PreferredPeerOrder[q], r.commitRPC, args)
-		}
+		r.SendMsg(r.PreferredPeerOrder[q], r.commitShortRPC, argsShort)
 		sent++
 	}
 
@@ -629,7 +619,7 @@ func (r *Replica) handlePrepareReply(preply *paxosproto.PrepareReply) {
 		r.defaultBallot[preply.AcceptorId] = preply.DefaultBallot
 	}
 
-	if lb.prepareOKs+1 > r.N>>1 {
+	if lb.prepareOKs+1 >= r.Replica.ReadQuorumSize() {
 		if lb.clientProposals != nil {
 			dlog.Printf("Pushing client proposals")
 			cmds := make([]state.Command, len(lb.clientProposals))
@@ -655,7 +645,7 @@ func (r *Replica) handlePrepareReply(preply *paxosproto.PrepareReply) {
 				}
 			}
 		}
-		if count >= r.N/2 && m > r.smallestDefaultBallot {
+		if count >= r.Replica.ReadQuorumSize()-1 && m > r.smallestDefaultBallot {
 			r.smallestDefaultBallot = m
 		}
 
@@ -687,7 +677,7 @@ func (r *Replica) handleAcceptReply(areply *paxosproto.AcceptReply) {
 	if areply.Ballot > lb.lastTriedBallot {
 		dlog.Printf("Another active leader using ballot %d \n", areply.Ballot)
 		lb.nacks++
-		if lb.nacks+1 > r.N>>1 {
+		if lb.nacks+1 >= r.Replica.WriteQuorumSize() {
 			if r.IsLeader {
 				r.makeBallot(areply.Ballot)
 				dlog.Printf("Retrying with ballot %d \n", lb.lastTriedBallot)
@@ -698,7 +688,7 @@ func (r *Replica) handleAcceptReply(areply *paxosproto.AcceptReply) {
 	}
 
 	lb.acceptOKs++
-	if lb.acceptOKs+1 > r.N>>1 {
+	if lb.acceptOKs+1 >= r.Replica.WriteQuorumSize() {
 		dlog.Printf("Committing (crtInstance=%d)\n", r.crtInstance)
 		inst = r.instanceSpace[areply.Instance]
 		inst.status = COMMITTED

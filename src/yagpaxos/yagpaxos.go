@@ -22,7 +22,6 @@ type Replica struct {
 	cmdDescs  map[CommandId]*commandDesc
 	keysInfo  map[state.Key]*keyInfo
 	delivered map[CommandId]struct{}
-	trash     map[CommandId]struct{}
 
 	cs CommunicationSupply
 }
@@ -37,7 +36,6 @@ type commandDesc struct {
 
 	cond            *sync.Cond
 	fastAndSlowAcks *msgSet
-	collectMsgs     *msgSet
 
 	deliver func()
 }
@@ -80,8 +78,6 @@ type CommunicationSupply struct {
 	flushRPC        uint8
 }
 
-const TRASH_SIZE = 500
-
 func NewReplica(replicaId int, peerAddrs []string,
 	thrifty, exec, lread, dreply bool, failures int) *Replica {
 
@@ -96,7 +92,6 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cmdDescs:  make(map[CommandId]*commandDesc),
 		keysInfo:  make(map[state.Key]*keyInfo),
 		delivered: make(map[CommandId]struct{}),
-		trash:     make(map[CommandId]struct{}, TRASH_SIZE),
 
 		cs: CommunicationSupply{
 			maxLatency: 0,
@@ -431,10 +426,6 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 	}
 }
 
-func (r *Replica) handleCollects(leaderMsg interface{}, msgs []interface{}) {
-
-}
-
 func (r *Replica) handleNewLeader(msg *MNewLeader) {
 
 }
@@ -485,11 +476,6 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 		}
 		desc.fastAndSlowAcks =
 			newMsgSet(WQ, acceptFastAndSlowAck, r.handleFastAndSlowAcks)
-
-		desc.collectMsgs = newMsgSet(newQuorumOfAll(r.N),
-			func(interface{}) bool {
-				return true
-			}, r.handleCollects)
 
 		desc.deliver = func() {
 			_, delivered := r.delivered[cmdId]

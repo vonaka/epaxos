@@ -21,15 +21,17 @@ var portnum *int = flag.Int("port", 7087, "Port # to listen on. Defaults to 7087
 var numNodes *int = flag.Int("N", 3, "Number of replicas. Defaults to 3.")
 
 type Master struct {
-	N         int
-	nodeList  []string
-	addrList  []string
-	portList  []int
-	lock      *sync.Mutex
-	nodes     []*rpc.Client
-	leader    []bool
-	alive     []bool
-	latencies []float64
+	N          int
+	nodeList   []string
+	addrList   []string
+	portList   []int
+	lock       *sync.Mutex
+	nodes      []*rpc.Client
+	leader     []bool
+	alive      []bool
+	latencies  []float64
+	finishInit bool
+	initCond   *sync.Cond
 }
 
 func main() {
@@ -38,15 +40,19 @@ func main() {
 	log.Printf("Master starting on port %d\n", *portnum)
 	log.Printf("...waiting for %d replicas\n", *numNodes)
 
-	master := &Master{*numNodes,
-		make([]string, 0, *numNodes),
-		make([]string, 0, *numNodes),
-		make([]int, 0, *numNodes),
-		new(sync.Mutex),
-		make([]*rpc.Client, *numNodes),
-		make([]bool, *numNodes),
-		make([]bool, *numNodes),
-		make([]float64, *numNodes)}
+	master := &Master{
+		N:          *numNodes,
+		nodeList:   make([]string, 0, *numNodes),
+		addrList:   make([]string, 0, *numNodes),
+		portList:   make([]int, 0, *numNodes),
+		lock:       new(sync.Mutex),
+		nodes:      make([]*rpc.Client, *numNodes),
+		leader:     make([]bool, *numNodes),
+		alive:      make([]bool, *numNodes),
+		latencies:  make([]float64, *numNodes),
+		finishInit: false,
+	}
+	master.initCond = sync.NewCond(master.lock)
 
 	rpc.Register(master)
 	rpc.HandleHTTP()
@@ -93,31 +99,47 @@ func (master *Master) run() {
 		}
 	}
 
+	var new_leader bool
+	pingNode := func(i int, node *rpc.Client) {
+		err := node.Call("Replica.Ping",
+			new(genericsmrproto.PingArgs),
+			new(genericsmrproto.PingReply))
+		master.lock.Lock()
+		if err != nil {
+			master.alive[i] = false
+			if master.leader[i] {
+				// need to choose a new leader
+				new_leader = true
+				master.leader[i] = false
+			}
+		} else {
+			master.alive[i] = true
+		}
+		master.lock.Unlock()
+	}
+	for i, node := range master.nodes {
+		pingNode(i, node)
+	}
+	// initialization is finished
+	// (i.e., slice `alive` has been computed)
+	master.finishInit = true
+	master.initCond.Broadcast()
+
 	for {
 		time.Sleep(1000 * 1000 * 1000)
-		new_leader := false
+		new_leader = false
 		for i, node := range master.nodes {
-			err := node.Call("Replica.Ping", new(genericsmrproto.PingArgs), new(genericsmrproto.PingReply))
-			master.lock.Lock()
-			if err != nil {
-				// log.Printf("Replica %d has failed to reply\n", i)
-				master.alive[i] = false
-				if master.leader[i] {
-					// need to choose a new leader
-					new_leader = true
-					master.leader[i] = false
-				}
-			} else {
-				master.alive[i] = true
-			}
-			master.lock.Unlock()
+			pingNode(i, node)
 		}
+
 		if !new_leader {
 			continue
 		}
 		for i, new_master := range master.nodes {
 			if master.alive[i] {
-				err := new_master.Call("Replica.BeTheLeader", new(genericsmrproto.BeTheLeaderArgs), new(genericsmrproto.BeTheLeaderReply))
+				err := new_master.Call("Replica.BeTheLeader",
+					new(genericsmrproto.BeTheLeaderArgs),
+					new(genericsmrproto.BeTheLeaderReply))
 				if err == nil {
 					master.lock.Lock()
 					master.leader[i] = true
@@ -130,8 +152,8 @@ func (master *Master) run() {
 	}
 }
 
-func (master *Master) Register(args *masterproto.RegisterArgs, reply *masterproto.RegisterReply) error {
-
+func (master *Master) Register(args *masterproto.RegisterArgs,
+	reply *masterproto.RegisterReply) error {
 	master.lock.Lock()
 	defer master.lock.Unlock()
 
@@ -163,8 +185,10 @@ func (master *Master) Register(args *masterproto.RegisterArgs, reply *masterprot
 		}
 		out, err := exec.Command("ping", addr, "-c 2", "-q").Output()
 		if err == nil {
-			master.latencies[index], _ = strconv.ParseFloat(strings.Split(string(out), "/")[4], 64)
-			log.Printf(" node %v [%v] -> %v", index, master.nodeList[index], master.latencies[index])
+			master.latencies[index], _ =
+				strconv.ParseFloat(strings.Split(string(out), "/")[4], 64)
+			log.Printf(" node %v [%v] -> %v", index,
+				master.nodeList[index], master.latencies[index])
 		} else {
 			log.Fatal("cannot connect to " + addr)
 		}
@@ -198,7 +222,8 @@ func (master *Master) Register(args *masterproto.RegisterArgs, reply *masterprot
 	return nil
 }
 
-func (master *Master) GetLeader(args *masterproto.GetLeaderArgs, reply *masterproto.GetLeaderReply) error {
+func (master *Master) GetLeader(args *masterproto.GetLeaderArgs,
+	reply *masterproto.GetLeaderReply) error {
 	master.lock.Lock()
 	defer master.lock.Unlock()
 
@@ -211,9 +236,13 @@ func (master *Master) GetLeader(args *masterproto.GetLeaderArgs, reply *masterpr
 	return nil
 }
 
-func (master *Master) GetReplicaList(args *masterproto.GetReplicaListArgs, reply *masterproto.GetReplicaListReply) error {
+func (master *Master) GetReplicaList(args *masterproto.GetReplicaListArgs,
+	reply *masterproto.GetReplicaListReply) error {
 	master.lock.Lock()
-	defer master.lock.Unlock()
+
+	for !master.finishInit {
+		master.initCond.Wait()
+	}
 
 	if len(master.nodeList) == master.N {
 		reply.Ready = true
@@ -229,5 +258,6 @@ func (master *Master) GetReplicaList(args *masterproto.GetReplicaListArgs, reply
 	}
 
 	log.Printf("nodes list %v", reply.ReplicaList)
+	master.lock.Unlock()
 	return nil
 }

@@ -416,6 +416,7 @@ func (r *Replica) handlePropose(propose *genericsmr.Propose) {
 	} else {
 		dlog.Printf("Fast round for instance %d w. %s\n", r.crtInstance, propose.Command.String())
 		inst.cmds = cmds
+		inst.lb.cmds = cmds
 		inst.bal = lb.lastTriedBallot
 		inst.vbal = lb.lastTriedBallot
 		inst.status = ACCEPTED

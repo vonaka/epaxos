@@ -105,10 +105,10 @@ func main() {
 	// FIXME: with `f` option `proxy.Stats()` might block
 	// fmt.Printf(proxy.Stats() + "\n")
 
-	proxy.Disconnect()
-
 	after_total := time.Now()
 	fmt.Printf("Test took %v\n", after_total.Sub(before_total))
+
+	proxy.Disconnect()
 }
 
 // convert nanosecond to millisecond

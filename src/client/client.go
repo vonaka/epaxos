@@ -75,15 +75,28 @@ func main() {
 		}
 	}
 
-	before_total := time.Now()
+	var before_total time.Time
 
-	for j := 0; j < *reqsNb; j++ {
+	// send one more request to be sure that at the moment when
+	// the remaining requests are send, all servers are ready to accept them
+	for j := 0; j < *reqsNb+1; j++ {
+
+		if j == 1 {
+			before_total = time.Now()
+		}
 
 		before := time.Now()
 
-		key := int64(karray[j])
+		real_j := func() int {
+			if j != 0 {
+				return j - 1
+			}
+			return j
+		}()
 
-		if put[j] {
+		key := int64(karray[real_j])
+
+		if put[real_j] {
 			value := make([]byte, *psize)
 			rand.Read(value)
 			proxy.Write(key, state.Value(value))

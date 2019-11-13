@@ -110,9 +110,11 @@ func main() {
 
 		after := time.Now()
 
-		duration := after.Sub(before)
-		fmt.Printf("latency %d\n", to_ms(duration.Nanoseconds()))
-		fmt.Printf("chain %d-1\n", to_ms(after.UnixNano()))
+		if j != 0 {
+			duration := after.Sub(before)
+			fmt.Printf("latency %v\n", to_ms(duration.Nanoseconds()))
+			fmt.Printf("chain %d-1\n", int64(to_ms(after.UnixNano())))
+		}
 	}
 
 	// FIXME: with `f` option `proxy.Stats()` might block
@@ -125,6 +127,6 @@ func main() {
 }
 
 // convert nanosecond to millisecond
-func to_ms(nano int64) int64 {
-	return nano / int64(time.Millisecond)
+func to_ms(nano int64) float64 {
+	return float64(nano) / float64(time.Millisecond)
 }

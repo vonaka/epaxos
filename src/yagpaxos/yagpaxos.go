@@ -288,8 +288,7 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 
 	for desc.phase != PRE_ACCEPT && desc.phase != PAYLOAD_ONLY {
 		desc.cond.Wait()
-		if status != FOLLOWER || ballot != msg.Ballot ||
-			desc.phase == ACCEPT || desc.phase == COMMIT {
+		if desc.phase == ACCEPT || desc.phase == COMMIT {
 			desc.Unlock()
 			return
 		}
@@ -331,6 +330,8 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 			Ballot:  ballot,
 			CmdId:   msg.CmdId,
 		}
+
+		desc.fastAndSlowAcks.add(msg.Replica, ballot, true, msg)
 		desc.Unlock()
 
 		r.Lock()
@@ -342,6 +343,7 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 		return
 	}
 
+	desc.fastAndSlowAcks.add(msg.Replica, ballot, true, msg)
 	desc.Unlock()
 }
 
@@ -396,64 +398,45 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 	status := r.status
 	ballot := r.ballot
 	WQ := r.qs.WQ(r.ballot)
+
+	if leaderMsg == nil || len(msgs) != r.N/2 || r.N == 0 ||
+		(status != LEADER && status != FOLLOWER) {
+		r.Unlock()
+		return
+	}
+
+	var leaderFastAck *MFastAck
+	switch leaderMsg := leaderMsg.(type) {
+	case *MFastAck:
+		leaderFastAck = leaderMsg
+	case *MSlowAck:
+		leaderFastAck = (*MFastAck)(leaderMsg)
+	}
+
+	desc := r.getCmdDesc(leaderFastAck.CmdId)
 	r.Unlock()
 
 	if WQ.contains(r.Id) {
-		if len(msgs) != r.N/2 || r.N == 0 ||
-			(status != LEADER && status != FOLLOWER) {
-			return
-		}
-
-		var someFastAck *MFastAck
-		switch someMsg := msgs[0].(type) {
-		case *MFastAck:
-			someFastAck = someMsg
-		case *MSlowAck:
-			someFastAck = (*MFastAck)(someMsg)
-		}
-
-		r.Lock()
-		desc := r.getCmdDesc(someFastAck.CmdId)
-		r.Unlock()
-
 		desc.Lock()
-		defer desc.Unlock()
 
-		if desc.phase == COMMIT || someFastAck.Ballot != ballot {
+		if desc.phase == COMMIT || leaderFastAck.Ballot != ballot {
+			desc.Unlock()
 			return
-		}
-
-		for desc.phase != ACCEPT {
-			desc.cond.Wait()
-			if desc.phase == COMMIT || someFastAck.Ballot != ballot ||
-				(status != LEADER && status != FOLLOWER) {
-				return
-			}
 		}
 
 		desc.phase = COMMIT
-		go desc.deliver()
+		desc.Unlock()
+
+		desc.deliver()
 	} else {
-		if leaderMsg == nil || len(msgs) != r.N/2 || status != FOLLOWER {
+		if status != FOLLOWER {
 			return
 		}
 
-		var leaderFastAck *MFastAck
-		switch leaderMsg := leaderMsg.(type) {
-		case *MFastAck:
-			leaderFastAck = leaderMsg
-		case *MSlowAck:
-			leaderFastAck = (*MFastAck)(leaderMsg)
-		}
-
-		r.Lock()
-		desc := r.getCmdDesc(leaderFastAck.CmdId)
-		r.Unlock()
-
 		desc.Lock()
-		defer desc.Unlock()
 
 		if desc.phase == COMMIT || leaderFastAck.Ballot != ballot {
+			desc.Unlock()
 			return
 		}
 
@@ -461,13 +444,16 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 			desc.cond.Wait()
 			if desc.phase == COMMIT || leaderFastAck.Ballot != ballot ||
 				status != FOLLOWER {
+				desc.Unlock()
 				return
 			}
 		}
 
 		desc.phase = COMMIT
 		desc.dep = leaderFastAck.Dep
-		go desc.deliver()
+		desc.Unlock()
+
+		desc.deliver()
 	}
 }
 

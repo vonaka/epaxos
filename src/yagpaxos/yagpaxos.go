@@ -19,8 +19,8 @@ type Replica struct {
 	status  int
 	qs      quorumSet
 
-	cmdDescs map[CommandId]*commandDesc
-	keysInfo map[state.Key]*keyInfo
+	cmdDescs  map[CommandId]*commandDesc
+	keysInfo  map[state.Key]*keyInfo
 
 	cs CommunicationSupply
 }
@@ -33,9 +33,7 @@ type commandDesc struct {
 	dep     Dep
 	propose *genericsmr.Propose
 
-	phaseCond   *sync.Cond
-	deliverCond *sync.Cond
-
+	cond            *sync.Cond
 	fastAndSlowAcks *msgSet
 
 	deliver   func()
@@ -91,8 +89,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cballot: 0,
 		status:  FOLLOWER,
 
-		cmdDescs: make(map[CommandId]*commandDesc),
-		keysInfo: make(map[state.Key]*keyInfo),
+		cmdDescs:  make(map[CommandId]*commandDesc),
+		keysInfo:  make(map[state.Key]*keyInfo),
 
 		cs: CommunicationSupply{
 			maxLatency: 0,
@@ -199,14 +197,8 @@ func (r *Replica) run() {
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	r.Lock()
-	ballot := r.ballot
-	leader := r.leader()
-	WQ := r.qs.WQ(r.ballot)
 
-	if r.status != LEADER && r.status != FOLLOWER {
-		r.Unlock()
-		return
-	}
+	WQ := r.qs.WQ(r.ballot)
 
 	cmdId := CommandId{
 		ClientId: msg.ClientId,
@@ -214,43 +206,37 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	}
 
 	desc := r.getCmdDesc(cmdId)
-	descDep := r.generateDepOf(msg.Command, cmdId)
-	r.addCmdInfo(msg.Command, cmdId)
-	r.Unlock()
-
-	desc.Lock()
 	if desc.propose != nil {
-		desc.Unlock()
+		r.Unlock()
 		return
 	}
 
 	desc.propose = msg
+	desc.cond.Broadcast()
 	desc.cmd = msg.Command
-	desc.phaseCond.Broadcast()
 
 	if !WQ.contains(r.Id) {
 		desc.phase = PAYLOAD_ONLY
-		desc.Unlock()
+		r.Unlock()
 		return
 	}
 
-	if r.Id == leader {
+	if r.Id == r.leader() {
 		desc.phase = ACCEPT
 	} else {
 		desc.phase = PRE_ACCEPT
 	}
 
-	desc.dep = descDep
+	desc.dep = r.generateDepOf(desc.cmd, cmdId)
+	r.addCmdInfo(desc.cmd, cmdId)
 
 	fastAck := &MFastAck{
 		Replica: r.Id,
-		Ballot:  ballot,
+		Ballot:  r.ballot,
 		CmdId:   cmdId,
 		Dep:     desc.dep,
 	}
-	desc.Unlock()
 
-	r.Lock()
 	r.sendToAll(fastAck, r.cs.fastAckRPC)
 	r.Unlock()
 	r.handleFastAck(fastAck)
@@ -270,35 +256,30 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 
 func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 	r.Lock()
-	status := r.status
-	ballot := r.ballot
-	WQ := r.qs.WQ(r.ballot)
 
-	if (status != FOLLOWER && status != LEADER) || ballot != msg.Ballot {
+	if (r.status != FOLLOWER && r.status != LEADER) || r.ballot != msg.Ballot {
 		r.Unlock()
 		return
 	}
 
-	desc := r.getCmdDesc(msg.CmdId)
-	r.Unlock()
+	desc := r.getCmdDesc(msg.CmdId, true)
 
-	desc.Lock()
-
-	if status == LEADER {
-		desc.fastAndSlowAcks.add(msg.Replica, ballot, true, msg)
-		desc.Unlock()
+	if r.status == LEADER {
+		desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
+		r.Unlock()
 		return
 	}
 
 	if desc.phase == ACCEPT || desc.phase == COMMIT {
-		desc.Unlock()
+		r.Unlock()
 		return
 	}
 
 	for desc.phase != PRE_ACCEPT && desc.phase != PAYLOAD_ONLY {
-		desc.phaseCond.Wait()
-		if desc.phase == ACCEPT || desc.phase == COMMIT {
-			desc.Unlock()
+		desc.cond.Wait()
+		if r.status != FOLLOWER || r.ballot != msg.Ballot ||
+			desc.phase == ACCEPT || desc.phase == COMMIT {
+			r.Unlock()
 			return
 		}
 	}
@@ -307,76 +288,60 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 	//    ∀ id' ∈ d. phase[id'] ∈ {ACCEPT, COMMIT}
 
 	desc.phase = ACCEPT
-	desc.phaseCond.Broadcast()
+	desc.cond.Broadcast()
 
 	dep := Dep(msg.Dep)
 	equals, diff := desc.dep.EqualsAndDiff(dep)
 	if !equals {
-		defer func() {
-			go func() {
-				for cmdIdPrime := range diff {
-					r.Lock()
-					descPrime := r.getCmdDesc(cmdIdPrime)
-					r.Unlock()
-					descPrime.Lock()
-					descPrime.phase = PAYLOAD_ONLY
-					descPrime.phaseCond.Broadcast()
-					descPrime.Unlock()
-				}
-			}()
-		}()
+		for cmdIdPrime := range diff {
+			descPrime := r.getCmdDesc(cmdIdPrime)
+			descPrime.phase = PAYLOAD_ONLY
+			descPrime.cond.Broadcast()
+		}
 		desc.dep = dep
 
 		slowAck := &MSlowAck{
 			Replica: r.Id,
-			Ballot:  ballot,
+			Ballot:  r.ballot,
 			CmdId:   msg.CmdId,
 			Dep:     desc.dep,
 		}
 
 		lightSlowAck := &MLightSlowAck{
 			Replica: r.Id,
-			Ballot:  ballot,
+			Ballot:  r.ballot,
 			CmdId:   msg.CmdId,
 		}
 
-		desc.fastAndSlowAcks.add(msg.Replica, ballot, true, msg)
-		desc.Unlock()
+		desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
 
-		r.Lock()
-		r.sendExcept(WQ, slowAck, r.cs.slowAckRPC)
-		r.sendTo(WQ, lightSlowAck, r.cs.lightSlowAckRPC)
+		r.sendExcept(r.qs.WQ(r.ballot), slowAck, r.cs.slowAckRPC)
+		r.sendTo(r.qs.WQ(r.ballot), lightSlowAck, r.cs.lightSlowAckRPC)
 		r.Unlock()
 		r.handleLightSlowAck(lightSlowAck)
 
 		return
 	}
 
-	desc.fastAndSlowAcks.add(msg.Replica, ballot, true, msg)
-	desc.Unlock()
+	desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
+	r.Unlock()
 }
 
 func (r *Replica) commonCaseFastAck(msg *MFastAck) {
 	r.Lock()
-	ballot := r.ballot
-	leader := r.leader()
+	defer r.Unlock()
 
-	if (r.status != FOLLOWER && r.status != LEADER) || ballot != msg.Ballot {
-		r.Unlock()
+	if (r.status != FOLLOWER && r.status != LEADER) || r.ballot != msg.Ballot {
 		return
 	}
 
 	desc := r.getCmdDesc(msg.CmdId)
-	r.Unlock()
-
-	desc.Lock()
-	defer desc.Unlock()
-
 	if desc.phase == COMMIT {
 		return
 	}
 
-	desc.fastAndSlowAcks.add(msg.Replica, ballot, msg.Replica == leader, msg)
+	desc.fastAndSlowAcks.add(msg.Replica, r.ballot,
+		msg.Replica == r.leader(), msg)
 }
 
 func (r *Replica) handleSlowAck(msg *MSlowAck) {
@@ -404,13 +369,9 @@ func (r *Replica) handleLightSlowAck(msg *MLightSlowAck) {
 func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 	msgs []interface{}) {
 	r.Lock()
-	status := r.status
-	ballot := r.ballot
-	WQ := r.qs.WQ(r.ballot)
+	defer r.Unlock()
 
-	if leaderMsg == nil || len(msgs) != r.N/2 || r.N == 0 ||
-		(status != LEADER && status != FOLLOWER) {
-		r.Unlock()
+	if leaderMsg == nil || len(msgs) != r.N/2 || r.N == 0 {
 		return
 	}
 
@@ -422,46 +383,41 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 		leaderFastAck = (*MFastAck)(leaderMsg)
 	}
 
-	desc := r.getCmdDesc(leaderFastAck.CmdId)
-	r.Unlock()
+	if r.status != LEADER && r.status != FOLLOWER {
+		return
+	}
 
+	WQ := r.qs.WQ(r.ballot)
 	if WQ.contains(r.Id) {
-		desc.Lock()
+		desc := r.getCmdDesc(leaderFastAck.CmdId)
 
-		if desc.phase == COMMIT || leaderFastAck.Ballot != ballot {
-			desc.Unlock()
+		if desc.phase == COMMIT || leaderFastAck.Ballot != r.ballot {
 			return
 		}
 
 		desc.phase = COMMIT
-		desc.Unlock()
-
 		desc.deliver()
 	} else {
-		if status != FOLLOWER {
+		if r.status != FOLLOWER {
 			return
 		}
 
-		desc.Lock()
+		desc := r.getCmdDesc(leaderFastAck.CmdId)
 
-		if desc.phase == COMMIT || leaderFastAck.Ballot != ballot {
-			desc.Unlock()
+		if desc.phase == COMMIT || leaderFastAck.Ballot != r.ballot {
 			return
 		}
 
-		for desc.phase == START {
-			desc.phaseCond.Wait()
-			if desc.phase == COMMIT || leaderFastAck.Ballot != ballot ||
-				status != FOLLOWER {
-				desc.Unlock()
+		for desc.phase != PAYLOAD_ONLY {
+			desc.cond.Wait()
+			if desc.phase == COMMIT || leaderFastAck.Ballot != r.ballot ||
+				r.status != FOLLOWER {
 				return
 			}
 		}
 
 		desc.phase = COMMIT
 		desc.dep = leaderFastAck.Dep
-		desc.Unlock()
-
 		desc.deliver()
 	}
 }
@@ -495,8 +451,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 	desc, exists := r.cmdDescs[cmdId]
 	if !exists {
 		desc = &commandDesc{}
-		desc.phaseCond = sync.NewCond(desc)
-		desc.deliverCond = sync.NewCond(desc)
+		desc.cond = sync.NewCond(r)
 
 		acceptFastAndSlowAck := func(msg interface{}) bool {
 			if desc.fastAndSlowAcks.leaderMsg == nil {
@@ -519,41 +474,22 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 			newMsgSet(WQ, acceptFastAndSlowAck, r.handleFastAndSlowAcks)
 
 		desc.deliver = func() {
-			desc.Lock()
 			if desc.phase != COMMIT || desc.delivered || !r.Exec {
-				desc.Unlock()
 				return
 			}
 
-			descDep := desc.dep
-			desc.Unlock()
-
-			for _, cmdIdPrime := range descDep {
-				r.Lock()
+			for _, cmdIdPrime := range desc.dep {
 				descPrime := r.getCmdDesc(cmdIdPrime)
-				r.Unlock()
-
-				descPrime.Lock()
 				for !descPrime.delivered {
-					descPrime.deliverCond.Wait()
-					descPrime.Unlock()
-
-					desc.Lock()
+					descPrime.cond.Wait()
 					if desc.phase != COMMIT || desc.delivered || !r.Exec {
-						desc.Unlock()
 						return
 					}
-					desc.Unlock()
-					descPrime.Lock()
 				}
-				descPrime.Unlock()
 			}
 
-			desc.Lock()
-			defer desc.Unlock()
-
 			desc.delivered = true
-			desc.deliverCond.Broadcast()
+			desc.cond.Broadcast()
 
 			if desc.cmd.Op == state.NONE {
 				return

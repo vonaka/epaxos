@@ -262,7 +262,7 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 		return
 	}
 
-	desc := r.getCmdDesc(msg.CmdId, true)
+	desc := r.getCmdDesc(msg.CmdId)
 
 	if r.status == LEADER {
 		desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)

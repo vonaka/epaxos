@@ -117,6 +117,32 @@ func (ki *keyInfo) add(cmd state.Command, cmdId CommandId) {
 	}
 }
 
+func (ki *keyInfo) remove(cmd state.Command, cmdId CommandId) {
+	cmdIndex, exists := ki.lastCmdIndex[cmdId.ClientId]
+
+	if exists {
+		lastCmdIndex := len(ki.clientLastCmd) - 1
+		lastCmdId := ki.clientLastCmd[lastCmdIndex]
+		ki.lastCmdIndex[lastCmdId.ClientId] = cmdIndex
+		ki.clientLastCmd[cmdIndex] = lastCmdId
+		ki.clientLastCmd = ki.clientLastCmd[0:lastCmdIndex]
+		delete(ki.lastCmdIndex, cmdId.ClientId)
+	}
+
+	if cmd.Op == state.PUT {
+		writeIndex, exists := ki.lastWriteIndex[cmdId.ClientId]
+
+		if exists {
+			lastWriteIndex := len(ki.clientLastWrite) - 1
+			lastWriteId := ki.clientLastWrite[lastWriteIndex]
+			ki.lastWriteIndex[lastWriteId.ClientId] = writeIndex
+			ki.clientLastWrite[writeIndex] = lastWriteId
+			ki.clientLastWrite = ki.clientLastWrite[0:lastWriteIndex]
+			delete(ki.lastWriteIndex, cmdId.ClientId)
+		}
+	}
+}
+
 //////////////////////////////////////////////////////////////
 //                                                          //
 //  gobin-codegen doesn't support declarations of the form  //

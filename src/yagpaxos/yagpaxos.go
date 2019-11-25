@@ -8,6 +8,8 @@ import (
 	"state"
 	"sync"
 	"time"
+
+	"fmt"
 )
 
 type Replica struct {
@@ -27,7 +29,6 @@ type Replica struct {
 }
 
 type commandDesc struct {
-	//sync.Mutex
 	*sync.Cond
 
 	phase   int
@@ -35,11 +36,16 @@ type commandDesc struct {
 	dep     Dep
 	propose *genericsmr.Propose
 
-	//cond            *sync.Cond
 	fastAndSlowAcks *msgSet
 
 	deliver   func()
 	delivered bool
+
+	timeSpentInPropose      time.Duration
+	timeSpentInFastAck      time.Duration
+	timeSpentInSlowAck      time.Duration
+	timeSpentInLightSlowAck time.Duration
+	timeSpentInCollect      time.Duration
 }
 
 // status
@@ -132,9 +138,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 			ki, exists := r.keysInfo[cmd.K]
 			if exists {
 				ki.remove(cmd, cmdId)
+				delete(r.cmdDescs, cmdId)
 			}
-			//desc.Broadcast()
-			delete(r.cmdDescs, cmdId)
 		}
 	}, &r.Mutex, &r.Shutdown)
 
@@ -173,6 +178,21 @@ func (r *Replica) run() {
 	}
 
 	go r.WaitForClientConnections()
+
+	go func() {
+		time.Sleep(time.Duration(2) * time.Minute)
+		r.Lock()
+		fmt.Println("hop!")
+		for cmdId, desc := range r.cmdDescs {
+			fmt.Println("cmd:", cmdId, "\n",
+				"propose:", desc.timeSpentInPropose, "\n",
+				"fastAck:", desc.timeSpentInFastAck, "\n",
+				"slowAck:", desc.timeSpentInSlowAck, "\n",
+				"lightSlowAck:", desc.timeSpentInLightSlowAck, "\n",
+				"dep size:", len(desc.dep), "\n")
+		}
+		r.Unlock()
+	}()
 
 	for !r.Shutdown {
 		select {
@@ -221,6 +241,9 @@ func (r *Replica) run() {
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	r.Lock()
+	defer r.Unlock()
+
+	start := time.Now()
 
 	WQ := r.qs.WQ(r.ballot)
 
@@ -230,19 +253,24 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	}
 
 	desc := r.getCmdDesc(cmdId)
+
+	defer func() {
+		end := time.Now()
+		desc.timeSpentInPropose = desc.timeSpentInPropose + end.Sub(start)
+	}()
+
 	if desc.propose != nil {
-		r.Unlock()
+		//r.Unlock()
 		return
 	}
 
 	desc.propose = msg
-	//desc.cond.Broadcast()
 	desc.Broadcast()
 	desc.cmd = msg.Command
 
 	if !WQ.contains(r.Id) {
 		desc.phase = PAYLOAD_ONLY
-		r.Unlock()
+		//r.Unlock()
 		return
 	}
 
@@ -263,12 +291,14 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose) {
 	}
 
 	r.sendToAll(fastAck, r.cs.fastAckRPC)
-	r.Unlock()
-	r.handleFastAck(fastAck)
+	//r.Unlock()
+	go r.handleFastAck(fastAck)
 }
 
 func (r *Replica) handleFastAck(msg *MFastAck) {
 	r.Lock()
+
+	start := time.Now()
 
 	if msg.Replica == r.leader() && r.qs.WQ(r.ballot).contains(r.Id) {
 		r.Unlock()
@@ -277,13 +307,20 @@ func (r *Replica) handleFastAck(msg *MFastAck) {
 		r.Unlock()
 		r.commonCaseFastAck(msg)
 	}
+
+	end := time.Now()
+	r.Lock()
+	desc := r.cmdDescs[msg.CmdId]
+	desc.timeSpentInFastAck = desc.timeSpentInFastAck + end.Sub(start)
+	r.Unlock()
 }
 
 func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 	r.Lock()
+	defer r.Unlock()
 
 	if (r.status != FOLLOWER && r.status != LEADER) || r.ballot != msg.Ballot {
-		r.Unlock()
+		//r.Unlock()
 		return
 	}
 
@@ -291,21 +328,20 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 
 	if r.status == LEADER {
 		desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
-		r.Unlock()
+		//r.Unlock()
 		return
 	}
 
 	if desc.phase == ACCEPT || desc.phase == COMMIT {
-		r.Unlock()
+		//r.Unlock()
 		return
 	}
 
 	for desc.phase != PRE_ACCEPT && desc.phase != PAYLOAD_ONLY {
-		//desc.cond.Wait()
 		desc.Wait()
 		if r.status != FOLLOWER || r.ballot != msg.Ballot ||
 			desc.phase == ACCEPT || desc.phase == COMMIT {
-			r.Unlock()
+			//r.Unlock()
 			return
 		}
 	}
@@ -314,7 +350,6 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 	//    ∀ id' ∈ d. phase[id'] ∈ {ACCEPT, COMMIT}
 
 	desc.phase = ACCEPT
-	//desc.cond.Broadcast()
 	desc.Broadcast()
 
 	dep := Dep(msg.Dep)
@@ -323,7 +358,6 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 		for cmdIdPrime := range diff {
 			descPrime := r.getCmdDesc(cmdIdPrime)
 			descPrime.phase = PAYLOAD_ONLY
-			//descPrime.cond.Broadcast()
 			descPrime.Broadcast()
 		}
 		desc.dep = dep
@@ -345,14 +379,14 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck) {
 
 		r.sendExcept(r.qs.WQ(r.ballot), slowAck, r.cs.slowAckRPC)
 		r.sendTo(r.qs.WQ(r.ballot), lightSlowAck, r.cs.lightSlowAckRPC)
-		r.Unlock()
-		r.handleLightSlowAck(lightSlowAck)
+		//r.Unlock()
+		go r.handleLightSlowAck(lightSlowAck)
 
 		return
 	}
 
 	desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
-	r.Unlock()
+	//r.Unlock()
 }
 
 func (r *Replica) commonCaseFastAck(msg *MFastAck) {
@@ -373,11 +407,19 @@ func (r *Replica) commonCaseFastAck(msg *MFastAck) {
 }
 
 func (r *Replica) handleSlowAck(msg *MSlowAck) {
+	start := time.Now()
 	r.commonCaseFastAck((*MFastAck)(msg))
+	end := time.Now()
+	r.Lock()
+	desc := r.cmdDescs[msg.CmdId]
+	desc.timeSpentInSlowAck = desc.timeSpentInSlowAck + end.Sub(start)
+	r.Unlock()
 }
 
 func (r *Replica) handleLightSlowAck(msg *MLightSlowAck) {
 	r.Lock()
+
+	start := time.Now()
 
 	if r.qs.WQ(r.ballot).contains(r.Id) {
 		r.Unlock()
@@ -387,6 +429,13 @@ func (r *Replica) handleLightSlowAck(msg *MLightSlowAck) {
 			CmdId:   msg.CmdId,
 			Dep:     nil,
 		})
+
+		end := time.Now()
+		r.Lock()
+		desc := r.cmdDescs[msg.CmdId]
+		desc.timeSpentInLightSlowAck =
+			desc.timeSpentInLightSlowAck + end.Sub(start)
+		r.Unlock()
 
 		return
 	}
@@ -399,7 +448,7 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 	r.Lock()
 	defer r.Unlock()
 
-	if leaderMsg == nil || len(msgs) != r.N/2 || r.N == 0 {
+	if leaderMsg == nil || len(msgs) < r.N/2 || r.N == 0 {
 		return
 	}
 
@@ -437,7 +486,6 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 		}
 
 		for desc.phase != PAYLOAD_ONLY {
-			//desc.cond.Wait()
 			desc.Wait()
 			if desc.phase == COMMIT || leaderFastAck.Ballot != r.ballot ||
 				r.status != FOLLOWER {
@@ -487,10 +535,10 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 	desc, exists := r.cmdDescs[cmdId]
 	if !exists {
 		desc = &commandDesc{}
-		//desc.cond = sync.NewCond(r)
 		desc.Cond = sync.NewCond(r)
 
 		acceptFastAndSlowAck := func(msg interface{}) bool {
+			//return true
 			if desc.fastAndSlowAcks.leaderMsg == nil {
 				return true
 			}
@@ -518,7 +566,6 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 			for _, cmdIdPrime := range desc.dep {
 				descPrime := r.getCmdDesc(cmdIdPrime)
 				for !descPrime.delivered {
-					//descPrime.cond.Wait()
 					descPrime.Wait()
 					if desc.phase != COMMIT || desc.delivered || !r.Exec {
 						return
@@ -527,7 +574,6 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 			}
 
 			desc.delivered = true
-			//desc.cond.Broadcast()
 			desc.Broadcast()
 
 			defer func() {
@@ -562,6 +608,12 @@ func (r *Replica) getCmdDesc(cmdId CommandId) *commandDesc {
 
 		desc.delivered = false
 
+		desc.timeSpentInPropose = time.Duration(0)
+		desc.timeSpentInFastAck = time.Duration(0)
+		desc.timeSpentInSlowAck = time.Duration(0)
+		desc.timeSpentInLightSlowAck = time.Duration(0)
+		desc.timeSpentInCollect = time.Duration(0)
+
 		r.cmdDescs[cmdId] = desc
 	}
 
@@ -584,9 +636,9 @@ func (r *Replica) generateDepOf(cmd state.Command, cmdId CommandId) Dep {
 		copy(dep, cdep)
 
 		return dep
-	} else {
-		return []CommandId{}
 	}
+
+	return []CommandId{}
 }
 
 func (r *Replica) addCmdInfo(cmd state.Command, cmdId CommandId) {

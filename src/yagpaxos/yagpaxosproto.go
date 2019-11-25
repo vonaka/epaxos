@@ -300,8 +300,8 @@ func (t *MSyncAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MSyncAckCache struct {
-	mu	sync.Mutex
-	cache	[]*MSyncAck
+	mu    sync.Mutex
+	cache []*MSyncAck
 }
 
 func NewMSyncAckCache() *MSyncAckCache {
@@ -362,8 +362,8 @@ func (t *MCollect) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MCollectCache struct {
-	mu	sync.Mutex
-	cache	[]*MCollect
+	mu    sync.Mutex
+	cache []*MCollect
 }
 
 func NewMCollectCache() *MCollectCache {
@@ -430,8 +430,8 @@ func (t *MFlush) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MFlushCache struct {
-	mu	sync.Mutex
-	cache	[]*MFlush
+	mu    sync.Mutex
+	cache []*MFlush
 }
 
 func NewMFlushCache() *MFlushCache {
@@ -492,8 +492,8 @@ func (t *CommandId) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type CommandIdCache struct {
-	mu	sync.Mutex
-	cache	[]*CommandId
+	mu    sync.Mutex
+	cache []*CommandId
 }
 
 func NewCommandIdCache() *CommandIdCache {
@@ -554,8 +554,8 @@ func (t *MFastAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MFastAckCache struct {
-	mu	sync.Mutex
-	cache	[]*MFastAck
+	mu    sync.Mutex
+	cache []*MFastAck
 }
 
 func NewMFastAckCache() *MFastAckCache {
@@ -669,8 +669,8 @@ func (t *MSlowAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MSlowAckCache struct {
-	mu	sync.Mutex
-	cache	[]*MSlowAck
+	mu    sync.Mutex
+	cache []*MSlowAck
 }
 
 func NewMSlowAckCache() *MSlowAckCache {
@@ -784,8 +784,8 @@ func (t *MLightSlowAck) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MLightSlowAckCache struct {
-	mu	sync.Mutex
-	cache	[]*MLightSlowAck
+	mu    sync.Mutex
+	cache []*MLightSlowAck
 }
 
 func NewMLightSlowAckCache() *MLightSlowAckCache {
@@ -858,8 +858,8 @@ func (t *MNewLeader) BinarySize() (nbytes int, sizeKnown bool) {
 }
 
 type MNewLeaderCache struct {
-	mu	sync.Mutex
-	cache	[]*MNewLeader
+	mu    sync.Mutex
+	cache []*MNewLeader
 }
 
 func NewMNewLeaderCache() *MNewLeaderCache {

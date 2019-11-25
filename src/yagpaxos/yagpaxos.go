@@ -136,7 +136,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 			cmd := desc.cmd
 			ki, exists := r.keysInfo[cmd.K]
 			if exists {
-				ki.remove(cmd, cmdId)
+				ki.remove(cmdId)
 				delete(r.cmdDescs, cmdId)
 			}
 		}
@@ -573,18 +573,7 @@ func (r *Replica) generateDepOf(cmd state.Command, cmdId CommandId) Dep {
 	info, exists := r.keysInfo[cmd.K]
 
 	if exists {
-		var cdep Dep
-
-		if cmd.Op == state.GET {
-			cdep = info.clientLastWrite
-		} else {
-			cdep = info.clientLastCmd
-		}
-
-		dep := make([]CommandId, len(cdep))
-		copy(dep, cdep)
-
-		return dep
+		return info.getDep()
 	}
 
 	return []CommandId{}
@@ -594,16 +583,11 @@ func (r *Replica) addCmdInfo(cmd state.Command, cmdId CommandId) {
 	info, exists := r.keysInfo[cmd.K]
 
 	if !exists {
-		info = &keyInfo{
-			clientLastWrite: []CommandId{},
-			clientLastCmd:   []CommandId{},
-			lastWriteIndex:  make(map[int32]int),
-			lastCmdIndex:    make(map[int32]int),
-		}
+		info = newKeyInfo()
 		r.keysInfo[cmd.K] = info
 	}
 
-	info.add(cmd, cmdId)
+	info.add(cmdId)
 }
 
 func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {

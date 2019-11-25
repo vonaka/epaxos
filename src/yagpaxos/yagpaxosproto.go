@@ -89,56 +89,32 @@ func (dep1 Dep) EqualsAndDiff(dep2 Dep) (bool, map[CommandId]struct{}) {
 }
 
 type keyInfo struct {
-	clientLastWrite []CommandId
-	clientLastCmd   []CommandId
-	lastWriteIndex  map[int32]int
-	lastCmdIndex    map[int32]int
+	getDep func() Dep
 }
 
-func (ki *keyInfo) add(cmd state.Command, cmdId CommandId) {
-	cmdIndex, exists := ki.lastCmdIndex[cmdId.ClientId]
-
-	if exists {
-		ki.clientLastCmd[cmdIndex] = cmdId
-	} else {
-		ki.lastCmdIndex[cmdId.ClientId] = len(ki.clientLastCmd)
-		ki.clientLastCmd = append(ki.clientLastCmd, cmdId)
-	}
-
-	if cmd.Op == state.PUT {
-		writeIndex, exists := ki.lastWriteIndex[cmdId.ClientId]
-
-		if exists {
-			ki.clientLastWrite[writeIndex] = cmdId
-		} else {
-			ki.lastWriteIndex[cmdId.ClientId] = len(ki.clientLastWrite)
-			ki.clientLastWrite = append(ki.clientLastWrite, cmdId)
-		}
+func newKeyInfo() *keyInfo {
+	return &keyInfo{
+		getDep: func() Dep {
+			return []CommandId{}
+		},
 	}
 }
 
-func (ki *keyInfo) remove(cmd state.Command, cmdId CommandId) {
-	cmdIndex, exists := ki.lastCmdIndex[cmdId.ClientId]
-
-	if exists {
-		lastCmdIndex := len(ki.clientLastCmd) - 1
-		lastCmdId := ki.clientLastCmd[lastCmdIndex]
-		ki.lastCmdIndex[lastCmdId.ClientId] = cmdIndex
-		ki.clientLastCmd[cmdIndex] = lastCmdId
-		ki.clientLastCmd = ki.clientLastCmd[0:lastCmdIndex]
-		delete(ki.lastCmdIndex, cmdId.ClientId)
+func (ki *keyInfo) add(cmdId CommandId) {
+	ki.getDep = func() Dep {
+		return []CommandId{ cmdId }
 	}
+}
 
-	if cmd.Op == state.PUT {
-		writeIndex, exists := ki.lastWriteIndex[cmdId.ClientId]
+func (ki *keyInfo) remove(cmdId CommandId) {
+	dep := ki.getDep()
 
-		if exists {
-			lastWriteIndex := len(ki.clientLastWrite) - 1
-			lastWriteId := ki.clientLastWrite[lastWriteIndex]
-			ki.lastWriteIndex[lastWriteId.ClientId] = writeIndex
-			ki.clientLastWrite[writeIndex] = lastWriteId
-			ki.clientLastWrite = ki.clientLastWrite[0:lastWriteIndex]
-			delete(ki.lastWriteIndex, cmdId.ClientId)
+	// since inside one key each next cmd depends on previous one,
+	// we suppose that if we want to remove latest id, then
+	// it is also safe to remove all previous, hence:
+	if len(dep) > 0 && cmdId == dep[0] {
+		ki.getDep = func() Dep {
+			return []CommandId{}
 		}
 	}
 }

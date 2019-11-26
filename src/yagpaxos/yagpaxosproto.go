@@ -102,7 +102,7 @@ func newKeyInfo() *keyInfo {
 
 func (ki *keyInfo) add(cmdId CommandId) {
 	ki.getDep = func() Dep {
-		return []CommandId{ cmdId }
+		return []CommandId{cmdId}
 	}
 }
 

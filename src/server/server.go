@@ -16,6 +16,7 @@ import (
 	"paxos"
 	"runtime"
 	"runtime/pprof"
+	"syscall"
 	"time"
 	"yagpaxos"
 )
@@ -57,7 +58,7 @@ func main() {
 		pprof.StartCPUProfile(f)
 
 		interrupt := make(chan os.Signal, 1)
-		signal.Notify(interrupt)
+		signal.Notify(interrupt, syscall.SIGUSR1)
 		go catchKill(interrupt)
 	}
 
@@ -139,6 +140,6 @@ func catchKill(interrupt chan os.Signal) {
 	if *cpuprofile != "" {
 		pprof.StopCPUProfile()
 	}
-	fmt.Println("Caught signal")
-	os.Exit(0)
+	fmt.Println("profing")
+	//os.Exit(0)
 }

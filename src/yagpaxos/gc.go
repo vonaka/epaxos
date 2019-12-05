@@ -17,7 +17,7 @@ func newGc(clean func(CommandId), mutex *sync.Mutex, shutdown *bool) *gc {
 		clean:  clean,
 		cmds:   make(map[CommandId]map[int32]struct{}),
 		trash:  make(map[CommandId]struct{}, WAIT_FOR),
-		wakeup: make(chan struct{}, 1),
+		wakeup: make(chan struct{}, 2),
 	}
 
 	go func(g *gc) {
@@ -37,10 +37,34 @@ func newGc(clean func(CommandId), mutex *sync.Mutex, shutdown *bool) *gc {
 	return &g
 }
 
+func newSeqGc(clean func(CommandId)) *gc {
+	g := gc{
+		clean:  clean,
+		cmds:   make(map[CommandId]map[int32]struct{}),
+		trash:  make(map[CommandId]struct{}, WAIT_FOR),
+		wakeup: make(chan struct{}, 1),
+	}
+
+	return &g
+}
+
+func (g *gc) check() {
+	select {
+	case <-g.wakeup:
+		g.Lock()
+		for cmdId := range g.trash {
+			g.clean(cmdId)
+			delete(g.trash, cmdId)
+		}
+		g.Unlock()
+	default:
+	}
+}
+
 func (g *gc) collect(cmdId CommandId, replicaId int32, totalReplicaNum int) {
 	rs, exists := g.cmds[cmdId]
 	if !exists {
-		g.cmds[cmdId] = make(map[int32]struct{})
+		g.cmds[cmdId] = make(map[int32]struct{}, totalReplicaNum)
 		rs = g.cmds[cmdId]
 	}
 

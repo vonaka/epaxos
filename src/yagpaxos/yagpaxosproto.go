@@ -18,6 +18,11 @@ type CommandId struct {
 	SeqNum   int32
 }
 
+var NullCmdId = CommandId{
+	ClientId: -1,
+	SeqNum:   -1,
+}
+
 func (cmdId CommandId) String() string {
 	b := new(bytes.Buffer)
 	fmt.Fprintf(b, "(client: %v, seq_num: %v)", cmdId.ClientId, cmdId.SeqNum)

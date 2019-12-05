@@ -100,9 +100,7 @@ func (ms *msgSet) add(repId int32, ballot int32,
 		ms.msgs = append(ms.msgs, msg)
 	}
 
-	// TODO: do not call this each time
-	// (or maybe it's not that bad?)
-	go ms.handler(ms.leaderMsg, ms.msgs)
+	ms.handler(ms.leaderMsg, ms.msgs)
 }
 
 func subsets(ids []int32, repNum, quorumSize, i int,

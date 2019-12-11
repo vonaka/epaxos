@@ -5,8 +5,10 @@ FLAGS    = -ldflags "-X genericsmr.storage=$(STOREDIR)"
 all: compile
 
 deps:
-	GOPATH=`pwd` go get github.com/google/uuid
-	GOPATH=`pwd` go get github.com/emirpasic/gods/maps/treemap
+	GOPATH=`pwd` go get "github.com/google/uuid"
+	GOPATH=`pwd` go get "github.com/emirpasic/gods/maps/treemap"
+	GOPATH=`pwd` go get "github.com/orcaman/concurrent-map"
+	GOPATH=`pwd` go get "github.com/sasha-s/go-deadlock/..."
 
 compile: | $(STOREDIR)
 compile: deps

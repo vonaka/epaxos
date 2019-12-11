@@ -2,7 +2,6 @@ package yagpaxos
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/binary"
 	"encoding/gob"
 	"fastrpc"
@@ -13,20 +12,29 @@ import (
 	"sync"
 )
 
+// status
+const (
+	LEADER = iota
+	FOLLOWER
+	PREPARING
+)
+
+// phase
+const (
+	START = iota
+	PAYLOAD_ONLY
+	PRE_ACCEPT
+	ACCEPT
+	COMMIT
+)
+
 type CommandId struct {
 	ClientId int32
 	SeqNum   int32
 }
 
-var NullCmdId = CommandId{
-	ClientId: -1,
-	SeqNum:   -1,
-}
-
 func (cmdId CommandId) String() string {
-	b := new(bytes.Buffer)
-	fmt.Fprintf(b, "(client: %v, seq_num: %v)", cmdId.ClientId, cmdId.SeqNum)
-	return b.String()
+	return fmt.Sprintf("%v,%v", cmdId.ClientId, cmdId.SeqNum)
 }
 
 type Dep []CommandId
@@ -91,37 +99,6 @@ func (dep1 Dep) EqualsAndDiff(dep2 Dep) (bool, map[CommandId]struct{}) {
 
 	return len(dep1) == len(dep2) && len(seen1) == len(seen2) &&
 		len(seen1) == 0, seen1
-}
-
-type keyInfo struct {
-	getDep func() Dep
-}
-
-func newKeyInfo() *keyInfo {
-	return &keyInfo{
-		getDep: func() Dep {
-			return []CommandId{}
-		},
-	}
-}
-
-func (ki *keyInfo) add(cmdId CommandId) {
-	ki.getDep = func() Dep {
-		return []CommandId{cmdId}
-	}
-}
-
-func (ki *keyInfo) remove(cmdId CommandId) {
-	dep := ki.getDep()
-
-	// since inside one key each next cmd depends on previous one,
-	// we suppose that if we want to remove latest id, then
-	// it is also safe to remove all previous, hence:
-	if len(dep) > 0 && cmdId == dep[0] {
-		ki.getDep = func() Dep {
-			return []CommandId{}
-		}
-	}
 }
 
 //////////////////////////////////////////////////////////////

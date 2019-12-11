@@ -100,6 +100,8 @@ func (ms *msgSet) add(repId int32, ballot int32,
 		ms.msgs = append(ms.msgs, msg)
 	}
 
+	// TODO: do not call this each time
+	// (or maybe it's not that bad?)
 	ms.handler(ms.leaderMsg, ms.msgs)
 }
 

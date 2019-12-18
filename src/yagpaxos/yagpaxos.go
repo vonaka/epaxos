@@ -42,6 +42,9 @@ type commandDesc struct {
 
 	msgs   chan interface{}
 	active bool
+
+	child     *commandDesc
+	childLock sync.Mutex
 }
 
 type CommunicationSupply struct {
@@ -339,6 +342,17 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 		}
 
 		desc.phase = COMMIT
+
+		for _, depCmdId := range desc.dep {
+			depDesc := r.getCmdDesc(depCmdId, nil)
+			if depDesc == nil {
+				continue
+			}
+			depDesc.childLock.Lock()
+			depDesc.child = desc
+			depDesc.childLock.Unlock()
+		}
+
 		r.deliver(leaderFastAck.CmdId, desc)
 	} else {
 		if r.status != FOLLOWER {
@@ -354,6 +368,17 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 
 			desc.phase = COMMIT
 			desc.dep = leaderFastAck.Dep
+
+			for _, depCmdId := range desc.dep {
+				depDesc := r.getCmdDesc(depCmdId, nil)
+				if depDesc == nil {
+					continue
+				}
+				depDesc.childLock.Lock()
+				depDesc.child = desc
+				depDesc.childLock.Unlock()
+			}
+
 			r.deliver(leaderFastAck.CmdId, desc)
 		})
 	}
@@ -403,15 +428,21 @@ func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 		return
 	}
 
+	for _, cmdIdPrime := range desc.dep {
+		if !r.delivered.Has(cmdIdPrime.String()) {
+			return
+		}
+	}
+
 	// TODO: make sure that
 	//    ∀ id' ∈ dep[cmdId]. delivered[id']
 
-	defer r.delivered.Set(cmdId.String(), struct{}{})
 
 	desc.active = false
 	desc.msgs <- true
 
 	if isNoop(desc.cmd) {
+		r.delivered.Set(cmdId.String(), struct{}{})
 		return
 	}
 
@@ -419,7 +450,17 @@ func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 	v := desc.cmd.Execute(r.State)
 
 	if !r.Dreply {
+		r.delivered.Set(cmdId.String(), struct{}{})
 		return
+	}
+
+	r.delivered.Set(cmdId.String(), struct{}{})
+	if desc.child != nil {
+		go func() {
+			desc.childLock.Lock()
+			defer desc.childLock.Unlock()
+			desc.child.msgs <- "deliver"
+		}()
 	}
 
 	go func() {
@@ -459,8 +500,15 @@ func (r *Replica) handleDesc(desc *commandDesc) {
 		case *MLightSlowAck:
 			r.handleLightSlowAck(msg, desc)
 
-		case CommandId:
-			r.deliver(msg, desc)
+		case string:
+			propose := desc.propose
+			if propose == nil {
+				return
+			}
+			r.deliver(CommandId{
+				ClientId: propose.ClientId,
+				SeqNum:   propose.CommandId,
+			}, desc)
 		}
 	}
 }
@@ -484,6 +532,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 				msgs:   make(chan interface{}, 3),
 				active: true,
 				phase:  START,
+				child:  nil,
 			}
 
 			desc.preAccOrPayloadOnlyCondF = newCondF(func() bool {

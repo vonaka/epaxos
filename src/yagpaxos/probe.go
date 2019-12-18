@@ -12,9 +12,9 @@ type probe struct {
 	name string
 	n    int64
 
-	totalDuration   time.Duration
-	minDuration     time.Duration
-	maxDuration     time.Duration
+	totalDuration time.Duration
+	minDuration   time.Duration
+	maxDuration   time.Duration
 
 	startTime time.Time
 }
@@ -62,13 +62,12 @@ func (p *probe) String() string {
 		average = p.totalDuration / time.Duration(p.n)
 	}
 
-	return fmt.Sprintf("%s\n" +
-		"total duration:   %v\n" +
-		"average duration: %v\n" +
-		"min duration:     %v\n" +
-		"max duration:     %v\n" +
+	return fmt.Sprintf("%s\n"+
+		"total duration:   %v\n"+
+		"average duration: %v\n"+
+		"min duration:     %v\n"+
+		"max duration:     %v\n"+
 		"number of calls:  %v\n",
 		p.name, p.totalDuration, average,
 		p.minDuration, p.maxDuration, p.n)
 }
-

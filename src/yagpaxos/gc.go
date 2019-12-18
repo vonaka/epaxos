@@ -2,7 +2,7 @@ package yagpaxos
 
 import "sync"
 
-const WAIT_FOR = 800
+var WAIT_FOR = 800
 
 type gc struct {
 	sync.Mutex
@@ -12,37 +12,12 @@ type gc struct {
 	wakeup chan struct{}
 }
 
-func newGc(clean func(CommandId), mutex *sync.Mutex, shutdown *bool) *gc {
+func newGc(clean func(CommandId)) *gc {
 	g := gc{
 		clean:  clean,
 		cmds:   make(map[CommandId]map[int32]struct{}),
 		trash:  make(map[CommandId]struct{}, WAIT_FOR),
 		wakeup: make(chan struct{}, 2),
-	}
-
-	go func(g *gc) {
-		for !*shutdown {
-			<-g.wakeup
-			g.Lock()
-			mutex.Lock()
-			for cmdId := range g.trash {
-				clean(cmdId)
-				delete(g.trash, cmdId)
-			}
-			mutex.Unlock()
-			g.Unlock()
-		}
-	}(&g)
-
-	return &g
-}
-
-func newSeqGc(clean func(CommandId)) *gc {
-	g := gc{
-		clean:  clean,
-		cmds:   make(map[CommandId]map[int32]struct{}),
-		trash:  make(map[CommandId]struct{}, WAIT_FOR),
-		wakeup: make(chan struct{}, 1),
 	}
 
 	return &g
@@ -62,6 +37,9 @@ func (g *gc) check() {
 }
 
 func (g *gc) collect(cmdId CommandId, replicaId int32, totalReplicaNum int) {
+	g.Lock()
+	defer g.Unlock()
+
 	rs, exists := g.cmds[cmdId]
 	if !exists {
 		g.cmds[cmdId] = make(map[int32]struct{}, totalReplicaNum)
@@ -75,13 +53,9 @@ func (g *gc) collect(cmdId CommandId, replicaId int32, totalReplicaNum int) {
 
 	rs[replicaId] = struct{}{}
 	if len(rs) == totalReplicaNum {
-		go func(g *gc) {
-			g.Lock()
-			defer g.Unlock()
-			g.trash[cmdId] = struct{}{}
-			if len(g.trash) == WAIT_FOR {
-				g.wakeup <- struct{}{}
-			}
-		}(g)
+		g.trash[cmdId] = struct{}{}
+		if len(g.trash) == WAIT_FOR {
+			g.wakeup <- struct{}{}
+		}
 	}
 }

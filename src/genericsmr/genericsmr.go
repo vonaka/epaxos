@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"state"
+	"strings"
 	"sync"
 	"time"
 )
@@ -22,7 +23,12 @@ const CHAN_BUFFER_SIZE = 200000
 const TRUE = uint8(1)
 const FALSE = uint8(0)
 
-var storage string
+var (
+	storage string
+
+	CollocatedWith = "NONE"
+	Latency        = time.Duration(0)
+)
 
 type RPCPair struct {
 	Obj  fastrpc.Serializable
@@ -313,7 +319,10 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 				if err = obj.Unmarshal(reader); err != nil {
 					break
 				}
-				rpair.Chan <- obj
+				go func() {
+					time.Sleep(Latency * time.Millisecond)
+					rpair.Chan <- obj
+				}()
 			} else {
 				log.Fatal("Error: received unknown message type ", msgType, " from  ", rid)
 			}
@@ -325,6 +334,8 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 	r.M.Unlock()
 }
 
+var hostNames map[string]string = make(map[string]string)
+
 func (r *Replica) clientListener(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
@@ -333,6 +344,15 @@ func (r *Replica) clientListener(conn net.Conn) {
 
 	r.M.Lock()
 	log.Println("Client up ", conn.RemoteAddr(), "(", r.LRead, ")")
+
+	rAddr := strings.Split(conn.RemoteAddr().String(), ":")[0]
+	addr, exists := hostNames[rAddr]
+	if !exists {
+		addrs, _ := net.LookupAddr(rAddr)
+		addr = strings.Split(addrs[0], ".")[0]
+		hostNames[rAddr] = addr
+	}
+
 	r.M.Unlock()
 
 	mutex := &sync.Mutex{}
@@ -359,7 +379,16 @@ func (r *Replica) clientListener(conn net.Conn) {
 					propose.Timestamp}
 				r.ReplyProposeTS(propreply, writer, mutex)
 			} else {
-				r.ProposeChan <- &Propose{propose, writer, mutex}
+				go func(propose *Propose) {
+					if addr != CollocatedWith {
+						time.Sleep(Latency * time.Millisecond)
+					}
+					r.ProposeChan <- propose
+				}(&Propose{
+					Propose: propose,
+					Reply:   writer,
+					Mutex:   mutex,
+				})
 			}
 			break
 
@@ -426,7 +455,8 @@ func (r *Replica) SendMsgNoFlush(peerId int32, code uint8, msg fastrpc.Serializa
 	msg.Marshal(w)
 }
 
-func (r *Replica) ReplyProposeTS(reply *genericsmrproto.ProposeReplyTS, w *bufio.Writer, lock *sync.Mutex) {
+func (r *Replica) ReplyProposeTS(reply *genericsmrproto.ProposeReplyTS,
+	w *bufio.Writer, lock *sync.Mutex) {
 	r.M.Lock()
 	defer r.M.Unlock()
 	reply.Marshal(w)

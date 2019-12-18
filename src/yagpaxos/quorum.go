@@ -2,9 +2,9 @@ package yagpaxos
 
 type quorum map[int32]struct{}
 
-type leaderQuorums map[int32]quorum
+type quorumsOfLeader map[int32]quorum
 
-type quorumSet map[int32]leaderQuorums
+type quorumSet map[int32]quorumsOfLeader
 
 func newQuorum(size int) quorum {
 	return make(map[int32]struct{}, size)
@@ -35,18 +35,18 @@ func (q quorum) copy() quorum {
 	return nq
 }
 
-func newLeaderQuorums() leaderQuorums {
+func newQuorumsOfLeader() quorumsOfLeader {
 	return make(map[int32]quorum)
 }
 
 func newQuorumSet(quorumSize, repNum int) quorumSet {
 	ids := make([]int32, repNum)
 	q := newQuorum(quorumSize)
-	qs := make(map[int32]leaderQuorums, repNum)
+	qs := make(map[int32]quorumsOfLeader, repNum)
 
 	for id := range ids {
 		ids[id] = int32(id)
-		qs[int32(id)] = newLeaderQuorums()
+		qs[int32(id)] = newQuorumsOfLeader()
 	}
 
 	subsets(ids, repNum, quorumSize, 0, q, qs)
@@ -59,50 +59,6 @@ func (qs quorumSet) WQ(ballot int32) quorum {
 	lqs := qs[l]
 	qid := (ballot / int32(len(qs))) % int32(len(lqs))
 	return lqs[qid]
-}
-
-type msgSet struct {
-	q         quorum
-	msgs      []interface{}
-	leaderMsg interface{}
-	accept    func(interface{}) bool
-	handler   func(interface{}, []interface{})
-}
-
-func newMsgSet(q quorum, accept func(interface{}) bool,
-	handler func(interface{}, []interface{})) *msgSet {
-
-	return &msgSet{
-		q:         q,
-		msgs:      []interface{}{},
-		leaderMsg: nil,
-		accept:    accept,
-		handler:   handler,
-	}
-}
-
-func (ms *msgSet) add(repId int32, ballot int32,
-	isLeader bool, msg interface{}) {
-	if !ms.q.contains(repId) {
-		return
-	}
-
-	if isLeader {
-		ms.leaderMsg = msg
-		newMsgs := []interface{}{}
-		for _, msg = range ms.msgs {
-			if ms.accept(msg) {
-				newMsgs = append(newMsgs, msg)
-			}
-		}
-		ms.msgs = newMsgs
-	} else if ms.accept(msg) {
-		ms.msgs = append(ms.msgs, msg)
-	}
-
-	// TODO: do not call this each time
-	// (or maybe it's not that bad?)
-	ms.handler(ms.leaderMsg, ms.msgs)
 }
 
 func subsets(ids []int32, repNum, quorumSize, i int,

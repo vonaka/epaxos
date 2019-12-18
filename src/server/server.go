@@ -4,6 +4,7 @@ import (
 	"epaxos"
 	"flag"
 	"fmt"
+	"genericsmr"
 	"gpaxos"
 	"log"
 	"masterproto"
@@ -40,11 +41,16 @@ var maxfailures = flag.Int("maxfailures", -1, "maximum number of maxfailures; de
 var durable = flag.Bool("durable", false, "Log to a stable store (i.e., a file in the current dir).")
 var batchWait *int = flag.Int("batchwait", 0, "Milliseconds to wait before sending a batch. If set to 0, batching is disabled. Defaults to 0.")
 var transitiveConflicts *bool = flag.Bool("transitiveconf", true, "Conflict relation is transitive.")
+var latency *int = flag.Int("delay", 0, "Node latency (in ms).")
+var collocatedWith *string = flag.String("client", "NONE", "Client with which this server is collocated")
 
 func main() {
 	flag.Parse()
 
 	runtime.GOMAXPROCS(*procs)
+
+	genericsmr.CollocatedWith = *collocatedWith
+	genericsmr.Latency = time.Duration(*latency)
 
 	if *doMencius && *thrifty {
 		log.Fatal("incompatble options -m -thrifty")

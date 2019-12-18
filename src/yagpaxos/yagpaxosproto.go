@@ -5,101 +5,11 @@ import (
 	"encoding/binary"
 	"encoding/gob"
 	"fastrpc"
-	"fmt"
 	"io"
 	"log"
 	"state"
 	"sync"
 )
-
-// status
-const (
-	LEADER = iota
-	FOLLOWER
-	PREPARING
-)
-
-// phase
-const (
-	START = iota
-	PAYLOAD_ONLY
-	PRE_ACCEPT
-	ACCEPT
-	COMMIT
-)
-
-type CommandId struct {
-	ClientId int32
-	SeqNum   int32
-}
-
-func (cmdId CommandId) String() string {
-	return fmt.Sprintf("%v,%v", cmdId.ClientId, cmdId.SeqNum)
-}
-
-type Dep []CommandId
-
-func (dep1 Dep) Equals(dep2 Dep) bool {
-	if len(dep1) != len(dep2) {
-		return false
-	}
-
-	seen1 := make(map[CommandId]struct{})
-	seen2 := make(map[CommandId]struct{})
-	for i := 0; i < len(dep1); i++ {
-		if dep1[i] == dep2[i] {
-			continue
-		}
-
-		_, exists := seen2[dep1[i]]
-		if exists {
-			delete(seen2, dep1[i])
-		} else {
-			seen1[dep1[i]] = struct{}{}
-		}
-
-		_, exists = seen1[dep2[i]]
-		if exists {
-			delete(seen1, dep2[i])
-		} else {
-			seen2[dep2[i]] = struct{}{}
-		}
-	}
-
-	return len(seen1) == len(seen2) && len(seen1) == 0
-}
-
-func (dep1 Dep) EqualsAndDiff(dep2 Dep) (bool, map[CommandId]struct{}) {
-	seen1 := make(map[CommandId]struct{})
-	seen2 := make(map[CommandId]struct{})
-
-	for i := 0; i < len(dep1) || i < len(dep2); i++ {
-		if i < len(dep1) && i < len(dep2) && dep1[i] == dep2[i] {
-			continue
-		}
-
-		if i < len(dep1) {
-			_, exists := seen2[dep1[i]]
-			if exists {
-				delete(seen2, dep1[i])
-			} else {
-				seen1[dep1[i]] = struct{}{}
-			}
-		}
-
-		if i < len(dep2) {
-			_, exists := seen1[dep2[i]]
-			if exists {
-				delete(seen1, dep2[i])
-			} else {
-				seen2[dep2[i]] = struct{}{}
-			}
-		}
-	}
-
-	return len(dep1) == len(dep2) && len(seen1) == len(seen2) &&
-		len(seen1) == 0, seen1
-}
 
 //////////////////////////////////////////////////////////////
 //                                                          //
@@ -232,14 +142,6 @@ func (m *MCollect) New() fastrpc.Serializable {
 
 func (m *MFlush) New() fastrpc.Serializable {
 	return new(MFlush)
-}
-
-func leader(ballot int32, repNum int) int32 {
-	return ballot % int32(repNum)
-}
-
-func inConflict(c1, c2 state.Command) bool {
-	return state.Conflict(&c1, &c2)
 }
 
 ///////////////////////////////////////////////////////////////////////////////

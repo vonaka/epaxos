@@ -55,7 +55,15 @@ type fastRep struct {
 	id  int
 }
 
-func NewParameters(masterAddr string, masterPort int, verbose bool, leaderless bool, fast bool, localReads bool) *Parameters {
+var (
+	CollocatedWith = "NONE"
+	CollocatedId   = -1
+	Latency        = time.Duration(0)
+)
+
+func NewParameters(masterAddr string, masterPort int, verbose bool,
+	leaderless bool, fast bool, localReads bool) *Parameters {
+
 	return &Parameters{
 		clientId:       int32(os.Getpid()),
 		masterAddr:     masterAddr,
@@ -169,6 +177,9 @@ func (b *Parameters) Connect() error {
 						continue
 					}
 					m.Unlock()
+					if rep != CollocatedId {
+						time.Sleep(Latency * time.Millisecond)
+					}
 					b.repChan <- &fastRep{
 						rep: reply,
 						id:  rep,
@@ -252,6 +263,7 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 
 	log.Printf("Pinging all replicas...\n")
 
+	found := false
 	minLatency := math.MaxFloat64
 	for i := 0; i < len(b.replicaLists); i++ {
 		if !replyRL.AliveList[i] {
@@ -261,6 +273,12 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 		if addr == "" {
 			addr = "127.0.0.1"
 		}
+
+		if addr == CollocatedWith {
+			found = true
+			CollocatedId = i
+		}
+
 		out, err := exec.Command("ping", addr, "-c 3", "-q").Output()
 		if err == nil {
 			// parse ping output
@@ -272,7 +290,11 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 				b.closestReplica = i
 				minLatency = latency
 			}
+			if found {
+				return nil
+			}
 		} else {
+			found = false
 			log.Printf("cannot ping " + b.replicaLists[i])
 			return err
 		}
@@ -423,10 +445,10 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 func (b *Parameters) fastWaitReplies(cmdId int32, from int) (state.Value, error) {
 	for {
 		fr := <-b.repChan
-		if fr.rep.CommandId == cmdId && (from == -1 || from == fr.id) {
+		if fr.rep.CommandId == cmdId {
 			if fr.rep.OK == TRUE {
 				b.maxCmdId = cmdId
-				b.lastAnswered = fr.id
+				//b.lastAnswered = fr.id
 				return fr.rep.Value, nil
 			} else {
 				return state.NIL(), errors.New("Failed to receive a response.")
@@ -458,5 +480,8 @@ func (b *Parameters) waitReplies(submitter int,
 		}
 	}
 
+	if submitter != CollocatedId {
+		time.Sleep(Latency * time.Millisecond)
+	}
 	return ret, err
 }

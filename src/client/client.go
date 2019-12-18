@@ -25,6 +25,8 @@ var procs *int = flag.Int("p", 2, "GOMAXPROCS. ")
 var conflicts *int = flag.Int("c", 0, "Percentage of conflicts. Defaults to 0%")
 var verbose *bool = flag.Bool("v", false, "verbose mode. ")
 var scan *bool = flag.Bool("s", false, "replace read with short scan (100 elements)")
+var latency *int = flag.Int("delay", 0, "Node latency (in ms).")
+var collocatedWith *string = flag.String("server", "NONE", "Server with which this client is collocated")
 
 func main() {
 
@@ -37,6 +39,9 @@ func main() {
 	if *conflicts > 100 {
 		log.Fatalf("Conflicts percentage must be between 0 and 100.\n")
 	}
+
+	bindings.Latency = time.Duration(*latency)
+	bindings.CollocatedWith = *collocatedWith
 
 	var proxy *bindings.Parameters
 	for {

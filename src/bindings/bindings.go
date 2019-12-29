@@ -277,6 +277,7 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 		if addr == CollocatedWith {
 			found = true
 			CollocatedId = i
+			b.closestReplica = i
 		}
 
 		out, err := exec.Command("ping", addr, "-c 3", "-q").Output()
@@ -286,15 +287,11 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 			log.Printf("%v -> %v", i, latency)
 
 			// save if closest replica
-			if minLatency > latency {
+			if minLatency > latency && !found {
 				b.closestReplica = i
 				minLatency = latency
 			}
-			if found {
-				return nil
-			}
 		} else {
-			found = false
 			log.Printf("cannot ping " + b.replicaLists[i])
 			return err
 		}

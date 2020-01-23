@@ -43,6 +43,7 @@ var batchWait *int = flag.Int("batchwait", 0, "Milliseconds to wait before sendi
 var transitiveConflicts *bool = flag.Bool("transitiveconf", true, "Conflict relation is transitive.")
 var latency *int = flag.Int("delay", 0, "Node latency (in ms).")
 var collocatedWith *string = flag.String("client", "NONE", "Client with which this server is collocated")
+var paxosSim *bool = flag.Bool("paxos", false, "Simulate Paxos.")
 
 func main() {
 	flag.Parse()
@@ -91,8 +92,9 @@ func main() {
 		rep := gpaxos.NewReplica(replicaId, nodeList, isLeader, *thrifty, *exec, *lread, *dreply, *maxfailures)
 		rpc.Register(rep)
 	} else if *doYagpaxos {
-		log.Println("Starting Yet Another Optimized Generalized Paxos replica...")
-		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec, *lread, *dreply, *maxfailures)
+		log.Println("Starting Yet Another Generalized Paxos replica...")
+		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
+			*lread, *dreply, *paxosSim, *maxfailures)
 		rpc.Register(rep)
 	} else {
 		log.Println("Starting classic Paxos replica...")

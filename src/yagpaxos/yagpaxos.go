@@ -27,6 +27,8 @@ type Replica struct {
 	qs quorumSet
 
 	cs CommunicationSupply
+
+	paxosSim bool
 }
 
 type commandDesc struct {
@@ -72,7 +74,7 @@ type CommunicationSupply struct {
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply bool, failures int) *Replica {
+	thrifty, exec, lread, dreply, paxosSim bool, failures int) *Replica {
 
 	r := &Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
@@ -108,6 +110,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 			collectChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 		},
+
+		paxosSim: paxosSim,
 	}
 
 	r.qs = newQuorumSet(r.N/2+1, r.N)
@@ -220,13 +224,27 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose, desc *commandDesc) {
 		return
 	}
 
-	desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
-
-	if r.Id == r.leader() {
-		desc.phase = ACCEPT
+	if r.paxosSim {
+		if r.Id == r.leader() {
+			desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
+			desc.phase = ACCEPT
+		} else {
+			desc.dep = []CommandId{
+				CommandId{-1, -1},
+			}
+			desc.phase = PRE_ACCEPT
+			desc.preAccOrPayloadOnlyCondF.recall()
+			return
+		}
 	} else {
-		desc.phase = PRE_ACCEPT
-		defer desc.preAccOrPayloadOnlyCondF.recall()
+		desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
+
+		if r.Id == r.leader() {
+			desc.phase = ACCEPT
+		} else {
+			desc.phase = PRE_ACCEPT
+			defer desc.preAccOrPayloadOnlyCondF.recall()
+		}
 	}
 
 	fastAck := &MFastAck{

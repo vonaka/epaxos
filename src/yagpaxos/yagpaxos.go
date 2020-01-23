@@ -452,10 +452,6 @@ func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 		}
 	}
 
-	// TODO: make sure that
-	//    ∀ id' ∈ dep[cmdId]. delivered[id']
-
-
 	desc.active = false
 	desc.msgs <- true
 

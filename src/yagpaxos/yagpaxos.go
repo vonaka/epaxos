@@ -601,7 +601,7 @@ func (r *Replica) getDepAndUpdateInfo(cmd state.Command, cmdId CommandId) Dep {
 			dep = append(dep, cdep...)
 		} else {
 			info = newLightKeyInfo()
-			r.keys[cmd.K] = info
+			r.keys[key] = info
 		}
 
 		info.add(cmd, cmdId)

@@ -47,18 +47,6 @@ type Replica struct {
 	flush                 bool
 	executedUpTo          int32
 	batchWait             int
-
-	proposes map[proposeKey] *proposeInfo
-}
-
-type proposeKey struct {
-	op state.Operation
-	k  state.Key
-}
-
-type proposeInfo struct {
-	propose *genericsmr.Propose
-	areply  *paxosproto.AcceptReply
 }
 
 type InstanceStatus int
@@ -108,9 +96,7 @@ func NewReplica(id int, peerAddrList []string, Isleader bool, thrifty bool, exec
 		0,
 		true,
 		-1,
-		batchWait,
-		make(map[proposeKey] *proposeInfo),
-	}
+		batchWait}
 
 	r.Durable = durable
 
@@ -391,51 +377,20 @@ func (r *Replica) bcastCommit(instance int32, ballot int32, command []state.Comm
 
 }
 
-func (r *Replica) bcastAcceptReply(areply *paxosproto.AcceptReply) {
-	for q := 0; q < r.N-1; q++ {
-		if !r.Alive[r.PreferredPeerOrder[q]] {
-			continue
-		}
-		r.SendMsg(r.PreferredPeerOrder[q], r.acceptReplyRPC, areply)
-	}
-}
-
 func (r *Replica) handlePropose(propose *genericsmr.Propose) {
 	if !r.IsLeader {
-		/*dlog.Printf("Not the leader, cannot propose %v\n", propose.CommandId)
+		dlog.Printf("Not the leader, cannot propose %v\n", propose.CommandId)
 		preply := &genericsmrproto.ProposeReplyTS{FALSE, -1, state.NIL(), 0}
 		r.ReplyProposeTS(preply, propose.Reply, propose.Mutex)
-		return*/
-
-		key := proposeKey{
-			op: propose.Command.Op,
-			k:  propose.Command.K,
-		}
-		ap, exists := r.proposes[key]
-		if exists && ap.areply != nil {
-			r.instanceSpace[ap.areply.Instance].lb.clientProposals =
-				[]*genericsmr.Propose{propose}
-			r.handleAcceptReply(ap.areply)
-		} else if exists {
-			ap.propose = propose
-		} else {
-			r.proposes[key] = &proposeInfo{
-				propose: propose,
-				areply:  nil,
-			}
-		}
 		return
 	}
 
-	// TODO: client's 'f' option can cause some problems if batchSize =/= 1 (?)
-	//batchSize := len(r.ProposeChan) + 1
-	batchSize := 1
+	batchSize := len(r.ProposeChan) + 1
 	dlog.Printf("Batched %d\n", batchSize)
 
 	proposals := make([]*genericsmr.Propose, batchSize)
 	cmds := make([]state.Command, batchSize)
 	proposals[0] = propose
-	cmds[0] = propose.Command
 	for i := 1; i < batchSize; i++ {
 		prop := <-r.ProposeChan
 		proposals[i] = prop
@@ -555,36 +510,9 @@ func (r *Replica) handleAccept(accept *paxosproto.Accept) {
 		r.sync()
 	}
 
+	// TODO: send to all
 	areply := &paxosproto.AcceptReply{accept.Instance, inst.bal}
-	//r.replyAccept(accept.LeaderId, areply)
-	r.bcastAcceptReply(areply)
-
-
-	if !r.IsLeader {
-		if r.instanceSpace[accept.Instance].lb == nil {
-			r.instanceSpace[accept.Instance].lb = &LeaderBookkeeping{
-				nil, 0, 0, 0, r.Id, nil, -1,
-			}
-		}
-
-		key := proposeKey{
-			op: accept.Command[0].Op,
-			k:  accept.Command[0].K,
-		}
-		ap, exists := r.proposes[key]
-		if exists && ap.propose != nil {
-			r.instanceSpace[accept.Instance].lb.clientProposals =
-				[]*genericsmr.Propose{ap.propose}
-			r.handleAcceptReply(areply)
-		} else if exists {
-			ap.areply = areply
-		} else {
-			r.proposes[key] = &proposeInfo{
-				propose: nil,
-				areply:  areply,
-			}
-		}
-	}
+	r.replyAccept(accept.LeaderId, areply)
 }
 
 func (r *Replica) handleCommit(commit *paxosproto.Commit) {
@@ -733,11 +661,6 @@ func (r *Replica) handleAcceptReply(areply *paxosproto.AcceptReply) {
 	inst := r.instanceSpace[areply.Instance]
 	lb := r.instanceSpace[areply.Instance].lb
 
-	if lb == nil { // this will be executed only by followers
-		lb = &LeaderBookkeeping{nil, 0, 0, 0, r.Id, nil, -1}
-		r.instanceSpace[areply.Instance].lb = lb
-	}
-
 	if areply.Ballot > r.maxRecvBallot {
 		r.maxRecvBallot = areply.Ballot
 	}
@@ -747,32 +670,26 @@ func (r *Replica) handleAcceptReply(areply *paxosproto.AcceptReply) {
 		return
 	}
 
-	// FIXME: what to do with followers ?
-	if r.IsLeader {
-		if areply.Ballot < lb.lastTriedBallot {
-			dlog.Printf("Message in late ")
-			return
-		}
+	if areply.Ballot < lb.lastTriedBallot {
+		dlog.Printf("Message in late ")
+		return
+	}
 
-		if areply.Ballot > lb.lastTriedBallot {
-			dlog.Printf("Another active leader using ballot %d \n", areply.Ballot)
-			lb.nacks++
-			if lb.nacks+1 >= r.Replica.WriteQuorumSize() {
-				if r.IsLeader {
-					r.makeBallot(areply.Ballot)
-					dlog.Printf("Retrying with ballot %d \n", lb.lastTriedBallot)
-					r.bcastPrepare(areply.Instance)
-				}
+	if areply.Ballot > lb.lastTriedBallot {
+		dlog.Printf("Another active leader using ballot %d \n", areply.Ballot)
+		lb.nacks++
+		if lb.nacks+1 >= r.Replica.WriteQuorumSize() {
+			if r.IsLeader {
+				r.makeBallot(areply.Ballot)
+				dlog.Printf("Retrying with ballot %d \n", lb.lastTriedBallot)
+				r.bcastPrepare(areply.Instance)
 			}
-			return
 		}
+		return
 	}
 
 	lb.acceptOKs++
-	if r.IsLeader {
-		lb.acceptOKs++
-	}
-	if lb.acceptOKs >= r.Replica.WriteQuorumSize() && lb.clientProposals != nil {
+	if lb.acceptOKs+1 >= r.Replica.WriteQuorumSize() {
 		dlog.Printf("Committing (crtInstance=%d)\n", r.crtInstance)
 		inst = r.instanceSpace[areply.Instance]
 		inst.status = COMMITTED

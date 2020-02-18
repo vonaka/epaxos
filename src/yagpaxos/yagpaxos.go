@@ -47,6 +47,10 @@ type commandDesc struct {
 
 	child     *commandDesc
 	childLock sync.Mutex
+
+	defered func()
+	// will be executed before p will send
+	// NewLeaderAck message
 }
 
 type CommunicationSupply struct {
@@ -288,15 +292,24 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *MFastAck, desc *commandDesc) {
 
 		// TODO: make sure that
 		//    ∀ id' ∈ d. phase[id'] ∈ {ACCEPT, COMMIT}
+		//
+		// seems to be satisfied already
 
 		desc.phase = ACCEPT
 
 		dep := Dep(msg.Dep)
-		equals, _ := desc.dep.EqualsAndDiff(dep)
+		equals, diffs := desc.dep.EqualsAndDiff(dep)
 		desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
 
 		if !equals {
-			// TODO: loop at line 35
+			oldDefered := desc.defered
+			desc.defered = func() {
+				for cmdId := range diffs {
+					descPrime := r.getCmdDesc(cmdId, nil)
+					descPrime.phase = PAYLOAD_ONLY
+				}
+				oldDefered()
+			}
 
 			desc.dep = dep
 
@@ -543,10 +556,11 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			}
 
 			desc := &commandDesc{
-				msgs:   make(chan interface{}, 3),
-				active: true,
-				phase:  START,
-				child:  nil,
+				msgs:    make(chan interface{}, 8),
+				active:  true,
+				phase:   START,
+				child:   nil,
+				defered: func() {},
 			}
 
 			desc.preAccOrPayloadOnlyCondF = newCondF(func() bool {

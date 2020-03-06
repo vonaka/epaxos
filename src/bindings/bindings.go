@@ -61,11 +61,34 @@ var (
 	Latency        = time.Duration(0)
 )
 
+func getClinetId() int32 {
+	id := int32(os.Getpid())
+
+    conn, err := net.Dial("udp", "8.8.8.8:80")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer conn.Close()
+
+    addr := conn.LocalAddr().(*net.UDPAddr)
+	ip := addr.IP
+	//id := int32(0)
+	if len(ip) == 16 {
+		id += int32(binary.BigEndian.Uint32(ip[12:16]))
+	} else {
+		id += int32(binary.BigEndian.Uint32(ip))
+	}
+
+	fmt.Println("ClientId:", id)
+
+    return id
+}
+
 func NewParameters(masterAddr string, masterPort int, verbose bool,
 	leaderless bool, fast bool, localReads bool) *Parameters {
 
 	return &Parameters{
-		clientId:       int32(os.Getpid()),
+		clientId:       getClinetId(),
 		masterAddr:     masterAddr,
 		masterPort:     masterPort,
 		verbose:        verbose,

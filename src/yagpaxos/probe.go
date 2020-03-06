@@ -25,13 +25,9 @@ func newProbe(name string) *probe {
 		minDuration: -1,
 	}
 
-	user1 := make(chan os.Signal, 1)
-	signal.Notify(user1, syscall.SIGUSR1)
-
-	go func() {
-		<-user1
+	hookUser1(func() {
 		fmt.Println(p)
-	}()
+	})
 
 	return p
 }
@@ -70,4 +66,14 @@ func (p *probe) String() string {
 		"number of calls:  %v\n",
 		p.name, p.totalDuration, average,
 		p.minDuration, p.maxDuration, p.n)
+}
+
+func hookUser1(f func()) {
+	user1 := make(chan os.Signal, 1)
+	signal.Notify(user1, syscall.SIGUSR1)
+
+	go func() {
+		<-user1
+		f()
+	}()
 }

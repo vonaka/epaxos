@@ -230,10 +230,10 @@ func (ki *lightKeyInfo) remove(_ state.Command, cmdId CommandId) {
 }
 
 func (ki *lightKeyInfo) getConflictCmds(cmd state.Command) []CommandId {
-	return ki.lastCmd
-	/*if cmd.Op == state.GET {
+	//return ki.lastCmd
+	if cmd.Op == state.GET {
 		return ki.lastWrite
 	} else {
 		return ki.lastCmd
-	}*/
+	}
 }

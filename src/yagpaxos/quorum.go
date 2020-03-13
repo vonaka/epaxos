@@ -54,7 +54,7 @@ func newQuorumSet(quorumSize, repNum int) quorumSet {
 	return qs
 }
 
-func (qs quorumSet) WQ(ballot int32) quorum {
+func (qs quorumSet) AQ(ballot int32) quorum {
 	l := leader(ballot, len(qs))
 	lqs := qs[l]
 	qid := (ballot / int32(len(qs))) % int32(len(lqs))

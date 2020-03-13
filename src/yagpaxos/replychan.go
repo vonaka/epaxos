@@ -7,9 +7,10 @@ import (
 )
 
 type replyArgs struct {
-	val   state.Value
-	desc  *commandDesc
-	cmdId CommandId
+	val     state.Value
+	propose *genericsmr.Propose
+	finish  chan interface{}
+	cmdId   CommandId
 }
 
 type replyChan struct {
@@ -17,8 +18,7 @@ type replyChan struct {
 	rep  *genericsmrproto.ProposeReplyTS
 }
 
-func NewReplyChan(r *Replica,
-	after func(_ CommandId, _ *commandDesc)) *replyChan {
+func NewReplyChan(r *Replica) *replyChan {
 	rc := &replyChan{
 		args: make(chan *replyArgs, 128),
 		rep: &genericsmrproto.ProposeReplyTS{
@@ -27,16 +27,17 @@ func NewReplyChan(r *Replica,
 	}
 
 	go func() {
+		slot := 0
 		for !r.Shutdown {
 			args := <-rc.args
 
-			rc.rep.CommandId = args.desc.propose.CommandId
+			rc.rep.CommandId = args.propose.CommandId
 			rc.rep.Value = args.val
-			rc.rep.Timestamp = args.desc.propose.Timestamp
+			rc.rep.Timestamp = args.propose.Timestamp
 
-			r.ReplyProposeTS(rc.rep, args.desc.propose.Reply,
-				args.desc.propose.Mutex)
-			after(args.cmdId, args.desc)
+			r.ReplyProposeTS(rc.rep, args.propose.Reply, args.propose.Mutex)
+			args.finish <- slot
+			slot = (slot + 1) % len(r.history)
 		}
 	}()
 
@@ -45,8 +46,9 @@ func NewReplyChan(r *Replica,
 
 func (r *replyChan) reply(val state.Value, desc *commandDesc, cmdId CommandId) {
 	r.args <- &replyArgs{
-		val:   val,
-		desc:  desc,
-		cmdId: cmdId,
+		val:     val,
+		propose: desc.propose,
+		cmdId:   cmdId,
+		finish:  desc.msgs,
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"github.com/orcaman/concurrent-map"
 )
 
+const HISTORY_SIZE = 1001001
+
 type Replica struct {
 	*genericsmr.Replica
 
@@ -22,19 +24,16 @@ type Replica struct {
 
 	cmdDescs  cmap.ConcurrentMap
 	delivered cmap.ConcurrentMap
-	history   []commandStaticDesc
-	repchan   *replyChan
-	keys      map[state.Key]keyInfo
-	keysL     sync.Mutex
+
+	repchan *replyChan
+	history []commandStaticDesc
+	keys    map[state.Key]keyInfo
+	keysL   sync.Mutex
 
 	qs quorumSet
-
 	cs CommunicationSupply
 
 	descPool    sync.Pool
-	fastAckPool sync.Pool
-
-	paxosSim bool
 }
 
 type commandDesc struct {
@@ -44,9 +43,7 @@ type commandDesc struct {
 	propose *genericsmr.Propose
 
 	fastAndSlowAcks *msgSet
-
-	preAccOrPayloadOnlyCondF *condF
-	payloadOnlyCondF         *condF
+	afterPropagate  *condF
 
 	msgs     chan interface{}
 	active   bool
@@ -71,11 +68,6 @@ type commandStaticDesc struct {
 	dep      Dep
 	slowPath bool
 	defered  func()
-}
-
-type ReusableFastAck struct {
-	fastAck MFastAck
-	wg      sync.WaitGroup
 }
 
 type CommunicationSupply struct {
@@ -111,11 +103,11 @@ func NewReplica(replicaId int, peerAddrs []string,
 
 		ballot:  0,
 		cballot: 0,
-		status:  FOLLOWER,
+		status:  NORMAL,
 
 		cmdDescs:  cmap.New(),
 		delivered: cmap.New(),
-		history:   make([]commandStaticDesc, 1001001),
+		history:   make([]commandStaticDesc, HISTORY_SIZE),
 		keys:      make(map[state.Key]keyInfo),
 
 		cs: CommunicationSupply{
@@ -146,35 +138,10 @@ func NewReplica(replicaId int, peerAddrs []string,
 				return &commandDesc{}
 			},
 		},
-		fastAckPool: sync.Pool{
-			New: func() interface{} {
-				return &ReusableFastAck{}
-			},
-		},
-
-		paxosSim: paxosSim,
 	}
 
+	r.repchan = NewReplyChan(r)
 	r.qs = newQuorumSet(r.N/2+1, r.N)
-
-	historySlot := 0
-	r.repchan = NewReplyChan(r, func(cmdId CommandId, desc *commandDesc) {
-		r.cmdDescs.Remove(cmdId.String())
-		r.history[historySlot].cmdId = cmdId
-		r.history[historySlot].phase = desc.phase
-		r.history[historySlot].cmd = desc.cmd
-		r.history[historySlot].dep = desc.dep
-		r.history[historySlot].slowPath = desc.slowPath
-		r.history[historySlot].defered = desc.defered
-		historySlot = (historySlot + 1) % len(r.history)
-		desc.wg.Wait()
-		desc.fastAndSlowAcks.free()
-		r.descPool.Put(desc)
-	})
-
-	if r.leader() == r.Id {
-		r.status = LEADER
-	}
 
 	r.cs.fastAckRPC =
 		r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
@@ -196,14 +163,19 @@ func NewReplica(replicaId int, peerAddrs []string,
 		r.RegisterRPC(new(MCollect), r.cs.collectChan)
 
 	hookUser1(func() {
+		totalNum := 0
 		slowPaths := 0
-		for i := 0; i < historySlot; i++ {
+		for i := 0; i < HISTORY_SIZE; i++ {
+			if r.history[i].dep == nil {
+				continue
+			}
+			totalNum++
 			if r.history[i].slowPath {
 				slowPaths++
 			}
 		}
 
-		fmt.Printf("Total number of commands: %d\n", historySlot)
+		fmt.Printf("Total number of commands: %d\n", totalNum)
 		fmt.Printf("Number of slow paths: %d\n", slowPaths)
 	})
 
@@ -224,7 +196,7 @@ func (r *Replica) run() {
 
 	go r.WaitForClientConnections()
 
-	cmdId := CommandId{}
+	var cmdId CommandId
 
 	for !r.Shutdown {
 		select {
@@ -233,7 +205,7 @@ func (r *Replica) run() {
 			cmdId.SeqNum = propose.CommandId
 			desc := r.getCmdDesc(cmdId, propose)
 			if desc == nil {
-				log.Fatal("")
+				log.Fatal("Got propose for the delivered command:", cmdId)
 			}
 
 		case m := <-r.cs.fastAckChan:
@@ -277,103 +249,60 @@ func (r *Replica) run() {
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose,
 	desc *commandDesc, cmdId CommandId) {
-	WQ := r.WQ()
 
-	if desc.phase != START || desc.propose != nil {
+	if r.status != NORMAL || desc.phase != START || desc.propose != nil {
 		return
 	}
 
 	desc.propose = msg
 	desc.cmd = msg.Command
 
-	if !WQ.contains(r.Id) {
+	if !r.AQ().contains(r.Id) {
 		desc.phase = PAYLOAD_ONLY
-		desc.payloadOnlyCondF.recall()
+		desc.afterPropagate.recall()
 		return
 	}
 
-	if r.paxosSim {
-		if r.Id == r.leader() {
-			desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
-			desc.phase = ACCEPT
-		} else {
-			desc.dep = []CommandId{
-				CommandId{-1, -1},
-			}
-			desc.phase = PRE_ACCEPT
-			desc.preAccOrPayloadOnlyCondF.recall()
-			return
-		}
-	} else {
-		desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
-
-		if r.Id == r.leader() {
-			desc.phase = ACCEPT
-		} else {
-			desc.phase = PRE_ACCEPT
-			if desc.preAccOrPayloadOnlyCondF.recall() && desc.slowPath {
-				// in this case a process already sent a MSlowAck
-				// message, hence, no need to sent MFastAck
-				return
-			}
-		}
+	desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
+	desc.phase = PRE_ACCEPT
+	if desc.afterPropagate.recall() && desc.slowPath {
+		// in this case a process already sent a MSlowAck
+		// message, hence, no need to sent MFastAck
+		return
 	}
 
-	rFastAck := r.fastAckPool.Get().(*ReusableFastAck)
-	rFastAck.fastAck = MFastAck{
+	fastAck := &MFastAck{
 		Replica: r.Id,
 		Ballot:  r.ballot,
 		CmdId:   cmdId,
 		Dep:     desc.dep,
 	}
 
-	rFastAck.wg.Add(1)
-	go func() {
-		r.sendToAll(&rFastAck.fastAck, r.cs.fastAckRPC)
-		rFastAck.wg.Done()
-	}()
-
-	r.handleFastAck(rFastAck, desc)
-
-	go func() {
-		rFastAck.wg.Wait()
-		r.fastAckPool.Put(rFastAck)
-	}()
+	go r.sendToAll(fastAck, r.cs.fastAckRPC)
+	r.handleFastAck(fastAck, desc)
 }
 
-func (r *Replica) handleFastAck(msg *ReusableFastAck, desc *commandDesc) {
-	if msg.fastAck.Replica == r.leader() && r.WQ().contains(r.Id) {
-		r.fastAckFromLeaderToWQ(msg, desc)
+func (r *Replica) handleFastAck(msg *MFastAck, desc *commandDesc) {
+	if msg.Replica == r.leader() {
+		r.fastAckFromLeader(msg, desc)
 	} else {
 		r.commonCaseFastAck(msg, desc)
 	}
 }
 
-func (r *Replica) fastAckFromLeaderToWQ(msg *ReusableFastAck,
-	desc *commandDesc) {
-
-	fastAck := msg.fastAck
-
-	if (r.status != FOLLOWER && r.status != LEADER) ||
-		r.ballot != fastAck.Ballot || desc.phase == COMMIT {
+func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
+	if !r.AQ().contains(r.Id) {
+		desc.afterPropagate.call(func() {
+			if r.status == NORMAL && r.ballot == msg.Ballot {
+				desc.dep = msg.Dep
+			}
+			desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
+		})
 		return
 	}
 
-	if r.status == LEADER {
-		desc.saveReusableFastAck(fastAck.Replica, r.ballot, true, msg)
-		return
-	}
-
-	if desc.phase == ACCEPT {
-		return
-	}
-
-	// do not Put `msg` in the pool if the call was defered
-	msg.wg.Add(1)
-	desc.preAccOrPayloadOnlyCondF.call(func() {
-		defer msg.wg.Done()
-
-		if r.status != FOLLOWER || r.ballot != fastAck.Ballot {
+	desc.afterPropagate.call(func() {
+		if r.status != NORMAL || r.ballot != msg.Ballot {
 			return
 		}
 
@@ -383,9 +312,8 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *ReusableFastAck,
 		// seems to be satisfied already
 
 		desc.phase = ACCEPT
-		desc.saveReusableFastAck(fastAck.Replica, r.ballot, true, msg)
-
-		dep := Dep(fastAck.Dep)
+		desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
+		dep := Dep(msg.Dep)
 		equals, diffs := desc.dep.EqualsAndDiff(dep)
 
 		if !equals {
@@ -406,58 +334,34 @@ func (r *Replica) fastAckFromLeaderToWQ(msg *ReusableFastAck,
 			desc.dep = dep
 			desc.slowPath = true
 
-			slowAck := &MSlowAck{
-				Replica: r.Id,
-				Ballot:  r.ballot,
-				CmdId:   fastAck.CmdId,
-				Dep:     desc.dep,
-			}
-
 			lightSlowAck := &MLightSlowAck{
 				Replica: r.Id,
 				Ballot:  r.ballot,
-				CmdId:   fastAck.CmdId,
+				CmdId:   msg.CmdId,
 			}
 
-			go func() {
-				r.sendExcept(r.WQ(), slowAck, r.cs.slowAckRPC)
-				r.sendTo(r.WQ(), lightSlowAck, r.cs.lightSlowAckRPC)
-			}()
+			go r.sendToAll(lightSlowAck, r.cs.lightSlowAckRPC)
 			r.handleLightSlowAck(lightSlowAck, desc)
 		}
 	})
 }
 
-func (r *Replica) commonCaseFastAck(msg *ReusableFastAck, desc *commandDesc) {
-	if (r.status != FOLLOWER && r.status != LEADER) ||
-		r.ballot != msg.fastAck.Ballot || desc.phase == COMMIT {
+func (r *Replica) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
+	if r.status != NORMAL || r.ballot != msg.Ballot {
 		return
 	}
 
-	desc.saveReusableFastAck(msg.fastAck.Replica, r.ballot,
-		msg.fastAck.Replica == r.leader(), msg)
+	desc.fastAndSlowAcks.add(msg.Replica, r.ballot, false, msg)
 }
 
-func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
-	msgs []interface{}) {
+func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) msgSetHandler {
+	return func (leaderMsg interface{}, msgs []interface{}) {
 
-	if leaderMsg == nil {
-		return
-	}
-
-	leaderFastAck := leaderMsg.(*ReusableFastAck).fastAck
-
-	if r.status != LEADER && r.status != FOLLOWER {
-		return
-	}
-
-	WQ := r.WQ()
-	if WQ.contains(r.Id) {
-		desc := r.getCmdDesc(leaderFastAck.CmdId, nil)
-
-		if desc.phase != ACCEPT || leaderFastAck.Ballot != r.ballot {
+		if leaderMsg == nil {
 			return
 		}
+
+		leaderFastAck := leaderMsg.(*MFastAck)
 
 		desc.phase = COMMIT
 
@@ -472,65 +376,20 @@ func (r *Replica) handleFastAndSlowAcks(leaderMsg interface{},
 		}
 
 		r.deliver(leaderFastAck.CmdId, desc)
-	} else {
-		if r.status != FOLLOWER {
-			return
-		}
-
-		desc := r.getCmdDesc(leaderFastAck.CmdId, nil)
-
-		desc.payloadOnlyCondF.call(func() {
-			if r.status != FOLLOWER || leaderFastAck.Ballot != r.ballot {
-				return
-			}
-
-			desc.phase = COMMIT
-			desc.dep = leaderFastAck.Dep
-
-			for _, depCmdId := range desc.dep {
-				depDesc := r.getCmdDesc(depCmdId, nil)
-				if depDesc == nil {
-					continue
-				}
-				depDesc.successorsL.Lock()
-				depDesc.successors = append(depDesc.successors, desc)
-				depDesc.successorsL.Unlock()
-			}
-
-			r.deliver(leaderFastAck.CmdId, desc)
-		})
 	}
 }
 
 func (r *Replica) handleSlowAck(msg *MSlowAck, desc *commandDesc) {
-	rFastAck := r.fastAckPool.Get().(*ReusableFastAck)
-	rFastAck.fastAck = *((*MFastAck)(msg))
-
-	r.commonCaseFastAck(rFastAck, desc)
-
-	go func() {
-		rFastAck.wg.Wait()
-		r.fastAckPool.Put(rFastAck)
-	}()
+	r.commonCaseFastAck((*MFastAck)(msg), desc)
 }
 
 func (r *Replica) handleLightSlowAck(msg *MLightSlowAck, desc *commandDesc) {
-	if r.qs.WQ(r.ballot).contains(r.Id) {
-		rFastAck := r.fastAckPool.Get().(*ReusableFastAck)
-		rFastAck.fastAck = MFastAck{
-			Replica: msg.Replica,
-			Ballot:  msg.Ballot,
-			CmdId:   msg.CmdId,
-			Dep:     nil,
-		}
-
-		r.commonCaseFastAck(rFastAck, desc)
-
-		go func() {
-			rFastAck.wg.Wait()
-			r.fastAckPool.Put(rFastAck)
-		}()
-	}
+	r.commonCaseFastAck(&MFastAck{
+		Replica: msg.Replica,
+		Ballot:  msg.Ballot,
+		CmdId:   msg.CmdId,
+		Dep:     nil,
+	}, desc)
 }
 
 func (r *Replica) handleNewLeader(msg *MNewLeader) {
@@ -561,7 +420,7 @@ func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 	// TODO: what if desc.propose is nil ?
 	//       is that possible ?
 
-	if desc.phase != COMMIT || !r.Exec {
+	if r.delivered.Has(cmdId.String()) || desc.phase != COMMIT || !r.Exec {
 		return
 	}
 
@@ -571,8 +430,6 @@ func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 		}
 	}
 
-	desc.active = false
-	desc.msgs <- true
 	r.delivered.Set(cmdId.String(), struct{}{})
 
 	if isNoop(desc.cmd) {
@@ -603,19 +460,8 @@ func (r *Replica) leader() int32 {
 	return leader(r.ballot, r.N)
 }
 
-func (r *Replica) WQ() quorum {
-	return r.qs.WQ(r.ballot)
-}
-
-func (desc *commandDesc) saveReusableFastAck(repId, ballot int32,
-	isLeader bool, rfa *ReusableFastAck) {
-
-	rfa.wg.Add(1)
-	if !desc.fastAndSlowAcks.add(repId, ballot, isLeader, rfa) {
-		rfa.wg.Done()
-	}
-	// else it will be "Done" at the moment of the deinitialization,
-	// i.e., `desc.fastAndSlowAcks.deinit(...)` or `desc.fastAndSlowAcks.free()`
+func (r *Replica) AQ() quorum {
+	return r.qs.AQ(r.ballot)
 }
 
 func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
@@ -626,13 +472,7 @@ func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 			r.handlePropose(msg, desc, cmdId)
 
 		case *MFastAck:
-			rFastAck := r.fastAckPool.Get().(*ReusableFastAck)
-			rFastAck.fastAck = *((*MFastAck)(msg))
-			r.handleFastAck(rFastAck, desc)
-			go func() {
-				rFastAck.wg.Wait()
-				r.fastAckPool.Put(rFastAck)
-			}()
+			r.handleFastAck(msg, desc)
 
 		case *MSlowAck:
 			r.handleSlowAck(msg, desc)
@@ -641,7 +481,21 @@ func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 			r.handleLightSlowAck(msg, desc)
 
 		case string:
-			r.deliver(cmdId, desc)
+			if msg == "deliver" {
+				r.deliver(cmdId, desc)
+			}
+
+		case int:
+			r.history[msg].cmdId = cmdId
+			r.history[msg].phase = desc.phase
+			r.history[msg].cmd = desc.cmd
+			r.history[msg].dep = desc.dep
+			r.history[msg].slowPath = desc.slowPath
+			r.history[msg].defered = desc.defered
+			desc.active = false
+			r.cmdDescs.Remove(cmdId.String())
+			r.descPool.Put(desc)
+			return
 		}
 	}
 }
@@ -655,14 +509,16 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 	res := r.cmdDescs.Upsert(cmdId.String(), nil,
 		func(exists bool, mapV, _ interface{}) interface{} {
 			if exists {
+				desc := mapV.(*commandDesc)
 				if msg != nil {
-					mapV.(*commandDesc).msgs <- msg
+					desc.msgs <- msg
 				}
 
-				return mapV
+				return desc
 			}
 
 			desc := r.descPool.Get().(*commandDesc)
+			desc.dep = nil
 			desc.msgs = make(chan interface{}, 8)
 			desc.active = true
 			desc.phase = START
@@ -671,37 +527,26 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			desc.defered = func() {}
 			desc.propose = nil
 
-			desc.preAccOrPayloadOnlyCondF = newCondF(func() bool {
-				return desc.phase == PRE_ACCEPT || desc.phase == PAYLOAD_ONLY
-			})
-
-			desc.payloadOnlyCondF = newCondF(func() bool {
-				return desc.phase == PAYLOAD_ONLY
+			desc.afterPropagate = newCondF(func() bool {
+				return desc.propose != nil
 			})
 
 			acceptFastAndSlowAck := func(msg interface{}) bool {
 				if desc.fastAndSlowAcks.leaderMsg == nil {
 					return true
 				}
-				leaderFastAck :=
-					desc.fastAndSlowAcks.leaderMsg.(*ReusableFastAck).fastAck
-				fastAck := msg.(*ReusableFastAck).fastAck
+				leaderFastAck := desc.fastAndSlowAcks.leaderMsg.(*MFastAck)
+				fastAck := msg.(*MFastAck)
 				return fastAck.Dep == nil ||
 					(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)
 			}
 
-			deinit := func(msg interface{}) {
-				msg.(*ReusableFastAck).wg.Done()
-			}
+			deinit := func(_ interface{}) {}
 
-			desc.fastAndSlowAcks = newMsgSet(r.WQ(), acceptFastAndSlowAck,
-				r.handleFastAndSlowAcks, deinit)
+			desc.fastAndSlowAcks = newMsgSet(r.AQ(), acceptFastAndSlowAck,
+				getFastAndSlowAcksHandler(r, desc), deinit)
 
-			desc.wg.Add(1)
-			go func() {
-				r.handleDesc(desc, cmdId)
-				desc.wg.Done()
-			}()
+			go r.handleDesc(desc, cmdId)
 
 			if msg != nil {
 				desc.msgs <- msg

@@ -8,9 +8,8 @@ import (
 
 // status
 const (
-	LEADER = iota
-	FOLLOWER
-	PREPARING
+	NORMAL = iota
+	RECOVERING
 )
 
 // phase

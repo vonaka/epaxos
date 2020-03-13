@@ -1,18 +1,20 @@
 package yagpaxos
 
+type msgSetHandler func(interface{}, []interface{})
+
 type msgSet struct {
 	q         quorum
 	msgs      []interface{}
 	leaderMsg interface{}
 	accept    func(interface{}) bool
-	handler   func(interface{}, []interface{})
+	handler   msgSetHandler
 	deinit    func(interface{})
 }
 
 func newMsgSet(q quorum,
-	accept func(interface{}) bool,
-	handler func(interface{}, []interface{}),
-	deinit func(interface{})) *msgSet {
+	accept  func(interface{}) bool,
+	handler msgSetHandler,
+	deinit  func(interface{})) *msgSet {
 
 	return &msgSet{
 		q:         q,
@@ -27,20 +29,20 @@ func newMsgSet(q quorum,
 func (ms *msgSet) add(repId, ballot int32, isLeader bool, msg interface{}) bool {
 	// TODO: check if msg is already in ms
 
-	added := false
-
 	if !ms.q.contains(repId) {
-		return added
+		return false
 	}
+
+	added := false
 
 	if isLeader {
 		ms.leaderMsg = msg
 		newMsgs := []interface{}{}
-		for _, msg = range ms.msgs {
-			if ms.accept(msg) {
-				newMsgs = append(newMsgs, msg)
+		for _, fmsg := range ms.msgs {
+			if ms.accept(fmsg) {
+				newMsgs = append(newMsgs, fmsg)
 			} else {
-				ms.deinit(msg)
+				ms.deinit(fmsg)
 			}
 		}
 		ms.msgs = newMsgs

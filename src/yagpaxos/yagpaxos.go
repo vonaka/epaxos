@@ -52,10 +52,6 @@ type commandDesc struct {
 	successors  []*commandDesc
 	successorsL sync.Mutex
 
-	// wait until it is safe to move
-	// desc to the pool
-	wg sync.WaitGroup
-
 	// will be executed before sending
 	// NewLeaderAck message
 	defered func()

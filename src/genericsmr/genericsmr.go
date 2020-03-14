@@ -17,17 +17,26 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/orcaman/concurrent-map"
 )
 
 const CHAN_BUFFER_SIZE = 200000
 const TRUE = uint8(1)
 const FALSE = uint8(0)
 
+type PPair struct {
+	P1 int32
+	P2 int32
+}
+
 var (
 	storage string
 
 	CollocatedWith = "NONE"
 	Latency        = time.Duration(0)
+	PLatency       = make(map[PPair]time.Duration)
+	CLatency       = make(map[string]int32)
 )
 
 type RPCPair struct {
@@ -201,7 +210,7 @@ func (r *Replica) ConnectToPeers() {
 		if int32(rid) == r.Id {
 			continue
 		}
-		go r.replicaListener(rid, reader)
+		go r.replicaListener(rid, reader, r.getProcessDelay(int32(rid)))
 	}
 
 }
@@ -279,7 +288,39 @@ func (r *Replica) WaitForClientConnections() {
 	}
 }
 
-func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
+func (r *Replica) getClientDelay(addr string) time.Duration {
+	if len(CLatency) == 0 {
+		if addr != CollocatedWith {
+			return Latency * time.Millisecond
+		}
+	} else {
+		cid, exists := CLatency[addr]
+		if exists {
+			return r.getProcessDelay(cid)
+		}
+	}
+
+	return time.Duration(0) * time.Millisecond
+}
+
+func (r *Replica) getProcessDelay(id int32) time.Duration {
+	if len(PLatency) == 0 {
+		return Latency * time.Millisecond
+	} else {
+		l, exists := PLatency[PPair{
+			P1: id,
+			P2: r.Id,
+		}]
+		if exists {
+			return l
+		}
+	}
+
+	return time.Duration(0) * time.Millisecond
+}
+
+func (r *Replica) replicaListener(rid int,
+	reader *bufio.Reader, delay time.Duration) {
 	var msgType uint8
 	var err error = nil
 	var gbeacon genericsmrproto.Beacon
@@ -320,7 +361,7 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 					break
 				}
 				go func() {
-					time.Sleep(Latency * time.Millisecond)
+					time.Sleep(delay)
 					rpair.Chan <- obj
 				}()
 			} else {
@@ -334,26 +375,29 @@ func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 	r.M.Unlock()
 }
 
-var hostNames map[string]string = make(map[string]string)
+var clientDelay cmap.ConcurrentMap = cmap.New()
 
 func (r *Replica) clientListener(conn net.Conn) {
 	reader := bufio.NewReader(conn)
 	writer := bufio.NewWriter(conn)
-	var msgType byte //:= make([]byte, 1)
+
+	var msgType byte
 	var err error
 
 	r.M.Lock()
 	log.Println("Client up ", conn.RemoteAddr(), "(", r.LRead, ")")
-
-	rAddr := strings.Split(conn.RemoteAddr().String(), ":")[0]
-	addr, exists := hostNames[rAddr]
-	if !exists {
-		addrs, _ := net.LookupAddr(rAddr)
-		addr = strings.Split(addrs[0], ".")[0]
-		hostNames[rAddr] = addr
-	}
-
 	r.M.Unlock()
+
+	var delay time.Duration
+	addr := strings.Split(conn.RemoteAddr().String(), ":")[0]
+	res, exists := clientDelay.Get(addr)
+	if !exists {
+		addrs, _ := net.LookupAddr(addr)
+		delay = r.getClientDelay(strings.Split(addrs[0], ".")[0])
+		clientDelay.Set(addr, &delay)
+	} else {
+		delay = *(res.(*time.Duration))
+	}
 
 	mutex := &sync.Mutex{}
 
@@ -380,9 +424,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 				r.ReplyProposeTS(propreply, writer, mutex)
 			} else {
 				go func(propose *Propose) {
-					if addr != CollocatedWith {
-						time.Sleep(Latency * time.Millisecond)
-					}
+					time.Sleep(delay)
 					r.ProposeChan <- propose
 				}(&Propose{
 					Propose: propose,

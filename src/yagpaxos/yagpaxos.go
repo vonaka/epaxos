@@ -91,7 +91,7 @@ type CommunicationSupply struct {
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply, paxosSim bool, failures int) *Replica {
+	thrifty, exec, lread, dreply bool, failures int) *Replica {
 
 	r := &Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,

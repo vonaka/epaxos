@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"epaxos"
 	"flag"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"paxos"
 	"runtime"
 	"runtime/pprof"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"yagpaxos"
@@ -43,14 +46,64 @@ var batchWait *int = flag.Int("batchwait", 0, "Milliseconds to wait before sendi
 var transitiveConflicts *bool = flag.Bool("transitiveconf", true, "Conflict relation is transitive.")
 var latency *int = flag.Int("delay", 0, "Node latency (in ms).")
 var collocatedWith *string = flag.String("client", "NONE", "Client with which this server is collocated")
-var paxosSim *bool = flag.Bool("paxos", false, "Simulate Paxos.")
+var lfile *string = flag.String("lfile", "NONE", "Latency file.")
+
+func updateLatencies(filename string) {
+	if filename == "NONE" {
+		return
+	}
+
+	f, err := os.Open(filename)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+    s := bufio.NewScanner(f)
+    for s.Scan() {
+		d := strings.Split(s.Text(), ",")
+		if len(d) != 3 {
+			log.Fatal(filename + ": Wrong file format")
+		}
+
+		p1, _ := strconv.ParseInt(d[0], 10, 32)
+		p2, err := strconv.ParseInt(d[1], 10, 32)
+		pl, _ := time.ParseDuration(d[2] + "ms")
+
+		if err  == nil {
+			genericsmr.PLatency[genericsmr.PPair{
+				P1: int32(p1),
+				P2: int32(p2),
+			}] = pl
+
+			if p1 != p2 {
+				genericsmr.PLatency[genericsmr.PPair{
+					P1: int32(p2),
+					P2: int32(p1),
+				}] = pl
+			}
+		} else {
+			genericsmr.CLatency[d[1]] = int32(p1)
+		}
+    }
+
+	fmt.Println(genericsmr.PLatency)
+	fmt.Println(genericsmr.CLatency)
+
+	err = s.Err()
+    if err != nil {
+        log.Fatal(err)
+    }
+}
 
 func main() {
 	flag.Parse()
 
+	updateLatencies(*lfile)
+
 	runtime.GOMAXPROCS(*procs)
 
-	genericsmr.CollocatedWith = *collocatedWith
+	genericsmr.CollocatedWith = strings.Split(*collocatedWith, ".")[0]
 	genericsmr.Latency = time.Duration(*latency)
 
 	if *doMencius && *thrifty {
@@ -94,7 +147,7 @@ func main() {
 	} else if *doYagpaxos {
 		log.Println("Starting Yet Another Generalized Paxos replica...")
 		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
-			*lread, *dreply, *paxosSim, *maxfailures)
+			*lread, *dreply, *maxfailures)
 		rpc.Register(rep)
 	} else {
 		log.Println("Starting classic Paxos replica...")

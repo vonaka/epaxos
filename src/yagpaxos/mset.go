@@ -8,13 +8,10 @@ type msgSet struct {
 	leaderMsg interface{}
 	accept    func(interface{}) bool
 	handler   msgSetHandler
-	deinit    func(interface{})
 }
 
 func newMsgSet(q quorum,
-	accept  func(interface{}) bool,
-	handler msgSetHandler,
-	deinit  func(interface{})) *msgSet {
+	accept func(interface{}) bool, handler msgSetHandler) *msgSet {
 
 	return &msgSet{
 		q:         q,
@@ -22,12 +19,10 @@ func newMsgSet(q quorum,
 		leaderMsg: nil,
 		accept:    accept,
 		handler:   handler,
-		deinit:    deinit,
 	}
 }
 
-func (ms *msgSet) add(repId, ballot int32, isLeader bool, msg interface{}) bool {
-	// TODO: check if msg is already in ms
+func (ms *msgSet) add(repId int32, isLeader bool, msg interface{}) bool {
 
 	if !ms.q.contains(repId) {
 		return false
@@ -41,8 +36,6 @@ func (ms *msgSet) add(repId, ballot int32, isLeader bool, msg interface{}) bool 
 		for _, fmsg := range ms.msgs {
 			if ms.accept(fmsg) {
 				newMsgs = append(newMsgs, fmsg)
-			} else {
-				ms.deinit(fmsg)
 			}
 		}
 		ms.msgs = newMsgs
@@ -58,13 +51,4 @@ func (ms *msgSet) add(repId, ballot int32, isLeader bool, msg interface{}) bool 
 	}
 
 	return added
-}
-
-func (ms *msgSet) free() {
-	for _, msg := range ms.msgs {
-		ms.deinit(msg)
-	}
-	if ms.leaderMsg != nil {
-		ms.deinit(ms.leaderMsg)
-	}
 }

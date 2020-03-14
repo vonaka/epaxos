@@ -292,7 +292,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 			if r.status == NORMAL && r.ballot == msg.Ballot {
 				desc.dep = msg.Dep
 			}
-			desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
+			desc.fastAndSlowAcks.add(msg.Replica, true, msg)
 		})
 		return
 	}
@@ -308,7 +308,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 		// seems to be satisfied already
 
 		desc.phase = ACCEPT
-		desc.fastAndSlowAcks.add(msg.Replica, r.ballot, true, msg)
+		desc.fastAndSlowAcks.add(msg.Replica, true, msg)
 		dep := Dep(msg.Dep)
 		equals, diffs := desc.dep.EqualsAndDiff(dep)
 
@@ -347,7 +347,7 @@ func (r *Replica) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
 		return
 	}
 
-	desc.fastAndSlowAcks.add(msg.Replica, r.ballot, false, msg)
+	desc.fastAndSlowAcks.add(msg.Replica, false, msg)
 }
 
 func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) msgSetHandler {
@@ -537,10 +537,8 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 					(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)
 			}
 
-			deinit := func(_ interface{}) {}
-
 			desc.fastAndSlowAcks = newMsgSet(r.AQ(), acceptFastAndSlowAck,
-				getFastAndSlowAcksHandler(r, desc), deinit)
+				getFastAndSlowAcksHandler(r, desc))
 
 			go r.handleDesc(desc, cmdId)
 

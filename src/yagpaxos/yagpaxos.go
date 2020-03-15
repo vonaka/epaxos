@@ -33,7 +33,7 @@ type Replica struct {
 	qs quorumSet
 	cs CommunicationSupply
 
-	descPool    sync.Pool
+	descPool sync.Pool
 }
 
 type commandDesc struct {
@@ -351,7 +351,7 @@ func (r *Replica) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
 }
 
 func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) msgSetHandler {
-	return func (leaderMsg interface{}, msgs []interface{}) {
+	return func(leaderMsg interface{}, msgs []interface{}) {
 
 		if leaderMsg == nil {
 			return

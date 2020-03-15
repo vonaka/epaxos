@@ -37,7 +37,7 @@ func NewReplyChan(r *Replica) *replyChan {
 
 			r.ReplyProposeTS(rc.rep, args.propose.Reply, args.propose.Mutex)
 			args.finish <- slot
-			slot = (slot + 1) % len(r.history)
+			slot = (slot + 1) % HISTORY_SIZE
 		}
 	}()
 

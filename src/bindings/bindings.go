@@ -14,13 +14,14 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
-	"os"
+	//"os"
 	"os/exec"
 	"state"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 const TRUE = uint8(1)
@@ -46,7 +47,6 @@ type Parameters struct {
 	retries        int32
 
 	repChan      chan *fastRep
-	lastAnswered int
 	maxCmdId     int32
 }
 
@@ -58,11 +58,11 @@ type fastRep struct {
 var (
 	CollocatedWith = "NONE"
 	CollocatedId   = -1
-	Latency        = time.Duration(0)
+	Latency time.Duration
 )
 
 func getClinetId() int32 {
-	id := int32(os.Getpid())
+	/*id := int32(os.Getpid())
 
     conn, err := net.Dial("udp", "8.8.8.8:80")
     if err != nil {
@@ -72,7 +72,6 @@ func getClinetId() int32 {
 
     addr := conn.LocalAddr().(*net.UDPAddr)
 	ip := addr.IP
-	//id := int32(0)
 	if len(ip) == 16 {
 		id += int32(binary.BigEndian.Uint32(ip[12:16]))
 	} else {
@@ -81,7 +80,9 @@ func getClinetId() int32 {
 
 	fmt.Println("ClientId:", id)
 
-    return id
+    return id*/
+
+	return int32(uuid.New().ID())
 }
 
 func NewParameters(masterAddr string, masterPort int, verbose bool,
@@ -105,7 +106,6 @@ func NewParameters(masterAddr string, masterPort int, verbose bool,
 		id:             0,
 		retries:        10,
 
-		lastAnswered: -1,
 		maxCmdId:     0,
 	}
 }
@@ -183,7 +183,6 @@ func (b *Parameters) Connect() error {
 		}
 	}
 
-	var m sync.Mutex
 	for _, i := range toConnect {
 		log.Println("Connection to ", i, " -> ", b.replicaLists[i])
 		b.servers[i] = Dial(b.replicaLists[i], false)
@@ -191,15 +190,9 @@ func (b *Parameters) Connect() error {
 		b.writers[i] = bufio.NewWriter(b.servers[i])
 		if b.isFast {
 			go func(rep int) {
+				reply := new(genericsmrproto.ProposeReplyTS)
 				for {
-					reply := new(genericsmrproto.ProposeReplyTS)
 					reply.Unmarshal(b.readers[rep])
-					m.Lock()
-					if reply.CommandId < b.maxCmdId {
-						m.Unlock()
-						continue
-					}
-					m.Unlock()
 					if rep != CollocatedId {
 						time.Sleep(Latency * time.Millisecond)
 					}
@@ -397,12 +390,12 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	err := errors.New("")
 	var value state.Value
 
-	for err != nil {
+	submitter := b.Leader
+	if b.leaderless {
+		submitter = b.closestReplica
+	}
 
-		submitter := b.Leader
-		if b.leaderless {
-			submitter = b.closestReplica
-		}
+	for err != nil {
 
 		if !b.isFast {
 			b.writers[submitter].WriteByte(genericsmrproto.PROPOSE)
@@ -425,12 +418,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 		}
 
 		if b.isFast {
-			if b.localReads && (args.Command.Op == state.GET ||
-				args.Command.Op == state.SCAN) {
-				value, err = b.fastWaitReplies(args.CommandId, b.lastAnswered)
-			} else {
-				value, err = b.fastWaitReplies(args.CommandId, -1)
-			}
+			value, err = b.fastWaitReplies(args.CommandId)
 		} else {
 			value, err = b.waitReplies(submitter, args.CommandId)
 		}
@@ -462,13 +450,11 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	return value
 }
 
-func (b *Parameters) fastWaitReplies(cmdId int32, from int) (state.Value, error) {
+func (b *Parameters) fastWaitReplies(cmdId int32) (state.Value, error) {
 	for {
 		fr := <-b.repChan
 		if fr.rep.CommandId == cmdId {
 			if fr.rep.OK == TRUE {
-				b.maxCmdId = cmdId
-				//b.lastAnswered = fr.id
 				return fr.rep.Value, nil
 			} else {
 				return state.NIL(), errors.New("Failed to receive a response.")
@@ -501,7 +487,7 @@ func (b *Parameters) waitReplies(submitter int,
 	}
 
 	if submitter != CollocatedId {
-		time.Sleep(Latency * time.Millisecond)
+		time.Sleep(Latency)
 	}
 	return ret, err
 }

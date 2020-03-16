@@ -18,7 +18,6 @@ import (
 	"paxos"
 	"runtime"
 	"runtime/pprof"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -44,12 +43,19 @@ var maxfailures = flag.Int("maxfailures", -1, "maximum number of maxfailures; de
 var durable = flag.Bool("durable", false, "Log to a stable store (i.e., a file in the current dir).")
 var batchWait *int = flag.Int("batchwait", 0, "Milliseconds to wait before sending a batch. If set to 0, batching is disabled. Defaults to 0.")
 var transitiveConflicts *bool = flag.Bool("transitiveconf", true, "Conflict relation is transitive.")
-var latency *int = flag.Int("delay", 0, "Node latency (in ms).")
+var latency *string = flag.String("delay", "0", "Node latency (in ms).")
 var collocatedWith *string = flag.String("client", "NONE", "Client with which this server is collocated")
 var lfile *string = flag.String("lfile", "NONE", "Latency file.")
 
 func updateLatencies(filename string) {
 	if filename == "NONE" {
+		if *collocatedWith != "NONE" {
+			zero, _ := time.ParseDuration("0ms")
+			addrs, _ := net.LookupIP(*collocatedWith)
+			for _, addr := range addrs {
+				genericsmr.AddrLatency[addr.String()] = zero
+			}
+		}
 		return
 	}
 
@@ -66,29 +72,22 @@ func updateLatencies(filename string) {
 			log.Fatal(filename + ": Wrong file format")
 		}
 
-		p1, _ := strconv.ParseInt(d[0], 10, 32)
-		p2, err := strconv.ParseInt(d[1], 10, 32)
-		pl, _ := time.ParseDuration(d[2] + "ms")
+		delay, _ := time.ParseDuration(d[2] + "ms")
 
-		if err  == nil {
-			genericsmr.PLatency[genericsmr.PPair{
-				P1: int32(p1),
-				P2: int32(p2),
-			}] = pl
-
-			if p1 != p2 {
-				genericsmr.PLatency[genericsmr.PPair{
-					P1: int32(p2),
-					P2: int32(p1),
-				}] = pl
+		if *myAddr == d[0] {
+			genericsmr.AddrLatency[d[1]] = delay
+			addrs, _ := net.LookupIP(d[1])
+			for _, addr := range addrs {
+				genericsmr.AddrLatency[addr.String()] = delay
 			}
-		} else {
-			genericsmr.CLatency[d[1]] = int32(p1)
+		} else if *myAddr == d[1] {
+			genericsmr.AddrLatency[d[0]] = delay
+			addrs, _ := net.LookupIP(d[0])
+			for _, addr := range addrs {
+				genericsmr.AddrLatency[addr.String()] = delay
+			}
 		}
     }
-
-	fmt.Println(genericsmr.PLatency)
-	fmt.Println(genericsmr.CLatency)
 
 	err = s.Err()
     if err != nil {
@@ -104,7 +103,7 @@ func main() {
 	runtime.GOMAXPROCS(*procs)
 
 	genericsmr.CollocatedWith = strings.Split(*collocatedWith, ".")[0]
-	genericsmr.Latency = time.Duration(*latency)
+	genericsmr.Latency, _ = time.ParseDuration(*latency + "ms")
 
 	if *doMencius && *thrifty {
 		log.Fatal("incompatble options -m -thrifty")

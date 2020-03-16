@@ -25,18 +25,12 @@ const CHAN_BUFFER_SIZE = 200000
 const TRUE = uint8(1)
 const FALSE = uint8(0)
 
-type PPair struct {
-	P1 int32
-	P2 int32
-}
-
 var (
 	storage string
 
 	CollocatedWith = "NONE"
 	Latency        = time.Duration(0)
-	PLatency       = make(map[PPair]time.Duration)
-	CLatency       = make(map[string]int32)
+	AddrLatency    = make(map[string]time.Duration)
 )
 
 type RPCPair struct {
@@ -210,7 +204,9 @@ func (r *Replica) ConnectToPeers() {
 		if int32(rid) == r.Id {
 			continue
 		}
-		go r.replicaListener(rid, reader, r.getProcessDelay(int32(rid)))
+		addr := strings.Split(r.PeerAddrList[rid], ":")[0]
+		delay := r.getDelay(addr)
+		go r.replicaListener(rid, reader, delay)
 	}
 
 }
@@ -288,35 +284,18 @@ func (r *Replica) WaitForClientConnections() {
 	}
 }
 
-func (r *Replica) getClientDelay(addr string) time.Duration {
-	if len(CLatency) == 0 {
-		if addr != CollocatedWith {
-			return Latency * time.Millisecond
-		}
-	} else {
-		cid, exists := CLatency[addr]
-		if exists {
-			return r.getProcessDelay(cid)
-		}
+func (r *Replica) getDelay(addr string) time.Duration {
+	d, exists := AddrLatency[addr]
+	if exists {
+		return d
 	}
 
-	return time.Duration(0) * time.Millisecond
-}
-
-func (r *Replica) getProcessDelay(id int32) time.Duration {
-	if len(PLatency) == 0 {
-		return Latency * time.Millisecond
-	} else {
-		l, exists := PLatency[PPair{
-			P1: id,
-			P2: r.Id,
-		}]
-		if exists {
-			return l
-		}
+	if addr != CollocatedWith {
+		return Latency
 	}
 
-	return time.Duration(0) * time.Millisecond
+	d, _ = time.ParseDuration("0ms")
+	return d
 }
 
 func (r *Replica) replicaListener(rid int,
@@ -388,16 +367,8 @@ func (r *Replica) clientListener(conn net.Conn) {
 	log.Println("Client up ", conn.RemoteAddr(), "(", r.LRead, ")")
 	r.M.Unlock()
 
-	var delay time.Duration
 	addr := strings.Split(conn.RemoteAddr().String(), ":")[0]
-	res, exists := clientDelay.Get(addr)
-	if !exists {
-		addrs, _ := net.LookupAddr(addr)
-		delay = r.getClientDelay(strings.Split(addrs[0], ".")[0])
-		clientDelay.Set(addr, &delay)
-	} else {
-		delay = *(res.(*time.Duration))
-	}
+	delay := r.getDelay(addr)
 
 	mutex := &sync.Mutex{}
 

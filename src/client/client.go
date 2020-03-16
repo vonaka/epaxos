@@ -4,12 +4,13 @@ import (
 	"bindings"
 	"flag"
 	"fmt"
-	"github.com/google/uuid"
 	"log"
 	"math/rand"
 	"runtime"
 	"state"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 var clientId string = *flag.String("id", "", "the id of the client. Default is RFC 4122 nodeID.")
@@ -25,8 +26,9 @@ var procs *int = flag.Int("p", 2, "GOMAXPROCS. ")
 var conflicts *int = flag.Int("c", 0, "Percentage of conflicts. Defaults to 0%")
 var verbose *bool = flag.Bool("v", false, "verbose mode. ")
 var scan *bool = flag.Bool("s", false, "replace read with short scan (100 elements)")
-var latency *int = flag.Int("delay", 0, "Node latency (in ms).")
+var latency *string = flag.String("delay", "0", "Node latency (in ms).")
 var collocatedWith *string = flag.String("server", "NONE", "Server with which this client is collocated")
+var lfile *string = flag.String("lfile", "NONE", "Latency file.")
 
 func main() {
 
@@ -40,7 +42,7 @@ func main() {
 		log.Fatalf("Conflicts percentage must be between 0 and 100.\n")
 	}
 
-	bindings.Latency = time.Duration(*latency)
+	bindings.Latency, _ = time.ParseDuration(*latency + "ms")
 	bindings.CollocatedWith = *collocatedWith
 
 	var proxy *bindings.Parameters

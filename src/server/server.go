@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"optpaxos"
 	"os"
 	"os/signal"
 	"paxos"
@@ -32,6 +33,7 @@ var doMencius *bool = flag.Bool("m", false, "Use Mencius as the replication prot
 var doGpaxos *bool = flag.Bool("g", false, "Use Generalized Paxos as the replication protocol. Defaults to false.")
 var doEpaxos *bool = flag.Bool("e", false, "Use EPaxos as the replication protocol. Defaults to false.")
 var doYagpaxos *bool = flag.Bool("y", false, "Use Yet Another GPaxos as the replication protocol. Defaults to false.")
+var doOptpaxos *bool = flag.Bool("optpaxos", false, "Use optimized Paxos as the replication protocol. Defaults to false.")
 var procs *int = flag.Int("p", 2, "GOMAXPROCS. Defaults to 2")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var thrifty = flag.Bool("thrifty", false, "Use only as many messages as strictly required for inter-replica communication.")
@@ -146,6 +148,11 @@ func main() {
 	} else if *doYagpaxos {
 		log.Println("Starting Yet Another Generalized Paxos replica...")
 		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
+			*lread, *dreply, *maxfailures)
+		rpc.Register(rep)
+	} else if *doOptpaxos {
+		log.Println("Starting optimized Paxos replica...")
+		rep := optpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
 			*lread, *dreply, *maxfailures)
 		rpc.Register(rep)
 	} else {

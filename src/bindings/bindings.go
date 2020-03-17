@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
-	//"os"
 	"os/exec"
 	"state"
 	"strconv"
@@ -38,6 +37,7 @@ type Parameters struct {
 	Leader         int
 	leaderless     bool
 	isFast         bool
+	isAlmostFast   bool
 	n              int
 	replicaLists   []string
 	servers        []net.Conn
@@ -62,31 +62,11 @@ var (
 )
 
 func getClinetId() int32 {
-	/*id := int32(os.Getpid())
-
-    conn, err := net.Dial("udp", "8.8.8.8:80")
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer conn.Close()
-
-    addr := conn.LocalAddr().(*net.UDPAddr)
-	ip := addr.IP
-	if len(ip) == 16 {
-		id += int32(binary.BigEndian.Uint32(ip[12:16]))
-	} else {
-		id += int32(binary.BigEndian.Uint32(ip))
-	}
-
-	fmt.Println("ClientId:", id)
-
-    return id*/
-
 	return int32(uuid.New().ID())
 }
 
-func NewParameters(masterAddr string, masterPort int, verbose bool,
-	leaderless bool, fast bool, localReads bool) *Parameters {
+func NewParameters(masterAddr string, masterPort int,
+	verbose, leaderless, fast, almostFast, localReads bool) *Parameters {
 
 	return &Parameters{
 		clientId:       getClinetId(),
@@ -98,6 +78,7 @@ func NewParameters(masterAddr string, masterPort int, verbose bool,
 		Leader:         0,
 		leaderless:     leaderless,
 		isFast:         fast,
+		isAlmostFast:   almostFast,
 		n:              0,
 		replicaLists:   nil,
 		servers:        nil,
@@ -157,8 +138,6 @@ func (b *Parameters) Connect() error {
 			}
 		}
 	} else {
-		toConnect = append(toConnect, b.closestReplica)
-
 		if !b.leaderless {
 			log.Printf("Getting leader from master...\n")
 			var replyL *masterproto.GetLeaderReply
@@ -181,6 +160,11 @@ func (b *Parameters) Connect() error {
 			}
 			log.Printf("The Leader is replica %d\n", b.Leader)
 		}
+		if b.isAlmostFast {
+			toConnect = append(toConnect, CollocatedId)
+		} else {
+			toConnect = append(toConnect, b.closestReplica)
+		}
 	}
 
 	for _, i := range toConnect {
@@ -188,7 +172,7 @@ func (b *Parameters) Connect() error {
 		b.servers[i] = Dial(b.replicaLists[i], false)
 		b.readers[i] = bufio.NewReader(b.servers[i])
 		b.writers[i] = bufio.NewWriter(b.servers[i])
-		if b.isFast {
+		if b.isFast || b.isAlmostFast {
 			go func(rep int) {
 				reply := new(genericsmrproto.ProposeReplyTS)
 				for {
@@ -215,9 +199,8 @@ func Dial(addr string, connect bool) net.Conn {
 	var conn net.Conn
 	var err error
 	var resp *http.Response
-	var done bool
 
-	for done = false; !done; {
+	for try := 0; try < 3; try++ {
 		conn, err = net.DialTimeout("tcp", addr, TIMEOUT)
 
 		if err == nil {
@@ -226,19 +209,20 @@ func Dial(addr string, connect bool) net.Conn {
 				io.WriteString(conn, "CONNECT "+rpc.DefaultRPCPath+" HTTP/1.0\n\n")
 				resp, err = http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: "CONNECT"})
 				if err == nil && resp != nil && resp.Status == "200 Connected to Go RPC" {
-					done = true
+					break
 				}
 			} else {
-				done = true
+				break
 			}
 		}
 
-		if !done {
+		if try == 2 {
 			// if not done yet, try again
 			log.Println("Connection error with ", addr, ": ", err)
 			if conn != nil {
 				conn.Close()
 			}
+			log.Fatal("Will not try anymore")
 		}
 	}
 
@@ -397,7 +381,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 
 	for err != nil {
 
-		if !b.isFast {
+		if !b.isFast && !b.isAlmostFast {
 			b.writers[submitter].WriteByte(genericsmrproto.PROPOSE)
 			args.Marshal(b.writers[submitter])
 			b.writers[submitter].Flush()
@@ -406,7 +390,12 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 			}
 		} else {
 			if b.verbose {
-				log.Println("Sent to everyone", args.CommandId)
+				if b.isFast {
+					log.Println("Sent to everyone", args.CommandId)
+				} else {
+					log.Println("Sned to leader and collocated server",
+						args.CommandId)
+				}
 			}
 			for rep := 0; rep < b.n; rep++ {
 				if b.writers[rep] != nil {
@@ -417,7 +406,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 			}
 		}
 
-		if b.isFast {
+		if b.isFast || b.isAlmostFast {
 			value, err = b.fastWaitReplies(args.CommandId)
 		} else {
 			value, err = b.waitReplies(submitter, args.CommandId)

@@ -1,4 +1,4 @@
-package yagpaxos
+package optpaxos
 
 import (
 	"dlog"
@@ -10,46 +10,54 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"yagpaxos"
 
 	"github.com/orcaman/concurrent-map"
 )
 
-type PaxosReplica struct {
+const HISTORY_SIZE = 1001001
+
+type Replica struct {
 	*genericsmr.Replica
 
 	ballot  int32
 	cballot int32
 	status  int
 
+	isLeader bool
+
 	lastCmdSlot int
 	cmdDescs    cmap.ConcurrentMap
 	delivered   cmap.ConcurrentMap
-	history     []paxosCommandStaticDesc
+	proposes    cmap.ConcurrentMap
+	history     []commandStaticDesc
 
-	qs quorumSet
-	cs paxosCommunicationSupply
+	qs yagpaxos.QuorumSet
+	cs communicationSupply
 
 	descPool sync.Pool
 }
 
-type paxosCommandDesc struct {
+type commandDesc struct {
+	cmdId CommandId
+
 	phase   int
 	cmd     state.Command
 	cmdSlot int
 	propose *genericsmr.Propose
-	twoBs   *msgSet
+	twoBs   *yagpaxos.MsgSet
 
 	msgs   chan interface{}
 	active bool
 }
 
-type paxosCommandStaticDesc struct {
+type commandStaticDesc struct {
 	cmdSlot int
 	phase   int
 	cmd     state.Command
 }
 
-type paxosCommunicationSupply struct {
+type communicationSupply struct {
 	maxLatency time.Duration
 
 	oneAChan chan fastrpc.Serializable
@@ -65,10 +73,10 @@ type paxosCommunicationSupply struct {
 	syncRPC uint8
 }
 
-func NewPaxosReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply bool, failures int) *PaxosReplica {
+func NewReplica(replicaId int, peerAddrs []string,
+	thrifty, exec, lread, dreply bool, failures int) *Replica {
 
-	r := &PaxosReplica{
+	r := &Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
 			thrifty, exec, lread, dreply, failures),
 
@@ -76,12 +84,15 @@ func NewPaxosReplica(replicaId int, peerAddrs []string,
 		cballot: 0,
 		status:  NORMAL,
 
+		isLeader: false,
+
 		lastCmdSlot: 0,
 		cmdDescs:    cmap.New(),
 		delivered:   cmap.New(),
-		history:     make([]paxosCommandStaticDesc, HISTORY_SIZE),
+		proposes:    cmap.New(),
+		history:     make([]commandStaticDesc, HISTORY_SIZE),
 
-		cs: paxosCommunicationSupply{
+		cs: communicationSupply{
 			maxLatency: 0,
 
 			oneAChan: make(chan fastrpc.Serializable,
@@ -98,12 +109,12 @@ func NewPaxosReplica(replicaId int, peerAddrs []string,
 
 		descPool: sync.Pool{
 			New: func() interface{} {
-				return &paxosCommandDesc{}
+				return &commandDesc{}
 			},
 		},
 	}
 
-	r.qs = newQuorumSet(r.N/2+1, r.N)
+	r.qs = yagpaxos.NewQuorumSet(r.N/2+1, r.N)
 
 	r.cs.oneARPC = r.RegisterRPC(new(M1A), r.cs.oneAChan)
 	r.cs.oneBRPC = r.RegisterRPC(new(M1B), r.cs.oneBChan)
@@ -116,7 +127,7 @@ func NewPaxosReplica(replicaId int, peerAddrs []string,
 	return r
 }
 
-func (r *PaxosReplica) run() {
+func (r *Replica) run() {
 	r.ConnectToPeers()
 	latencies := r.ComputeClosestPeers()
 	for _, l := range latencies {
@@ -128,39 +139,52 @@ func (r *PaxosReplica) run() {
 
 	go r.WaitForClientConnections()
 
+	var cmdId CommandId
+
 	for !r.Shutdown {
 		select {
 		case propose := <-r.ProposeChan:
-			desc := r.getCmdDesc(r.lastCmdSlot, propose)
-			if desc == nil {
-				log.Fatal("Got propose for the delivered command:",
-					propose.ClientId, propose.CommandId)
+			if r.isLeader {
+				desc := r.getCmdDesc(r.lastCmdSlot, propose)
+				if desc == nil {
+					log.Fatal("Got propose for the delivered command:",
+						propose.ClientId, propose.CommandId)
+				}
+				r.lastCmdSlot++
+			} else {
+				cmdId.ClientId = propose.ClientId
+				cmdId.SeqNum = propose.CommandId
+				r.proposes.Set(cmdId.String(), propose)
 			}
-			r.lastCmdSlot++
+
+		case m :=<-r.cs.twoAChan:
+			twoA := m.(*M2A)
+			r.getCmdDesc(twoA.CmdSlot, twoA)
+
+		case m :=<-r.cs.twoBChan:
+			twoB := m.(*M2B)
+			r.getCmdDesc(twoB.CmdSlot, twoB)
 		}
 	}
 }
 
-func (r *PaxosReplica) handlePropose(msg *genericsmr.Propose,
-	desc *paxosCommandDesc, slot int) {
+func (r *Replica) handlePropose(msg *genericsmr.Propose,
+	desc *commandDesc, slot int) {
 
 	if r.status != NORMAL || desc.propose != nil {
 		return
 	}
 
 	desc.propose = msg
-	desc.cmd = msg.Command
-
-	if r.Id != r.leader() {
-		return
-	}
-
-	desc.cmdSlot = slot
 
 	twoA := &M2A{
 		Replica: r.Id,
 		Ballot:  r.ballot,
 		Cmd:     msg.Command,
+		CmdId:   CommandId{
+			ClientId: msg.ClientId,
+			SeqNum:   msg.CommandId,
+		},
 		CmdSlot: slot,
 	}
 
@@ -168,15 +192,24 @@ func (r *PaxosReplica) handlePropose(msg *genericsmr.Propose,
 	r.handle2A(twoA, desc)
 }
 
-func (r *PaxosReplica) handle2A(msg *M2A, desc *paxosCommandDesc) {
+func (r *Replica) handle2A(msg *M2A, desc *commandDesc) {
 	if r.status != NORMAL || r.ballot != msg.Ballot {
 		return
 	}
 
 	desc.cmd = msg.Cmd
+	desc.cmdId = msg.CmdId
 	desc.cmdSlot = msg.CmdSlot
 
-	if !r.AQ().contains(r.Id) {
+	if !r.isLeader {
+		defer func() {
+			// deliver a command which waits for
+			// a payload
+			desc.msgs <- "deliver"
+		}()
+	}
+
+	if !r.AQ().Contains(r.Id) {
 		return
 	}
 
@@ -190,20 +223,24 @@ func (r *PaxosReplica) handle2A(msg *M2A, desc *paxosCommandDesc) {
 	r.handle2B(twoB, desc)
 }
 
-func (r *PaxosReplica) handle2B(msg *M2B, desc *paxosCommandDesc) {
+func (r *Replica) handle2B(msg *M2B, desc *commandDesc) {
 	if r.status != NORMAL || r.ballot != msg.Ballot {
 		return
 	}
 
-	desc.twoBs.add(msg.Replica, false, msg)
+	desc.twoBs.Add(msg.Replica, false, msg)
 }
 
-func (r *PaxosReplica) deliver(slot int, desc *paxosCommandDesc) {
+func (r *Replica) deliver(slot int, desc *commandDesc) {
 	if r.delivered.Has(strconv.Itoa(slot)) || desc.phase != COMMIT || !r.Exec {
 		return
 	}
 
-	if !r.delivered.Has(strconv.Itoa(slot - 1)) {
+	if desc.cmdId.SeqNum == -1 {
+		return
+	}
+
+	if slot > 0 && !r.delivered.Has(strconv.Itoa(slot - 1)) {
 		return
 	}
 
@@ -219,6 +256,11 @@ func (r *PaxosReplica) deliver(slot int, desc *paxosCommandDesc) {
 	dlog.Printf("Executing " + desc.cmd.String())
 	v := desc.cmd.Execute(r.State)
 
+	p, exists := r.proposes.Get(desc.cmdId.String())
+	if exists {
+		desc.propose = p.(*genericsmr.Propose)
+	}
+
 	if desc.propose == nil || !r.Dreply {
 		return
 	}
@@ -232,7 +274,7 @@ func (r *PaxosReplica) deliver(slot int, desc *paxosCommandDesc) {
 	r.ReplyProposeTS(rep, desc.propose.Reply, desc.propose.Mutex)
 }
 
-func (r *PaxosReplica) handleDesc(desc *paxosCommandDesc, slot int) {
+func (r *Replica) handleDesc(desc *commandDesc, slot int) {
 	for desc.active {
 		switch msg := (<-desc.msgs).(type) {
 
@@ -253,15 +295,17 @@ func (r *PaxosReplica) handleDesc(desc *paxosCommandDesc, slot int) {
 	}
 }
 
-func (r *PaxosReplica) leader() int32 {
-	return leader(r.ballot, r.N)
-}
-
-func (r *PaxosReplica) AQ() quorum {
+func (r *Replica) AQ() yagpaxos.Quorum {
 	return r.qs.AQ(r.ballot)
 }
 
-func (r *PaxosReplica) getCmdDesc(slot int, msg interface{}) *paxosCommandDesc {
+func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
+	reply *genericsmrproto.BeTheLeaderReply) error {
+	r.isLeader = true
+	return nil
+}
+
+func (r *Replica) getCmdDesc(slot int, msg interface{}) *commandDesc {
 
 	if r.delivered.Has(strconv.Itoa(slot)) {
 		return nil
@@ -270,7 +314,7 @@ func (r *PaxosReplica) getCmdDesc(slot int, msg interface{}) *paxosCommandDesc {
 	res := r.cmdDescs.Upsert(strconv.Itoa(slot), nil,
 		func(exists bool, mapV, _ interface{}) interface{} {
 			if exists {
-				desc := mapV.(*paxosCommandDesc)
+				desc := mapV.(*commandDesc)
 				if msg != nil {
 					desc.msgs <- msg
 				}
@@ -278,14 +322,15 @@ func (r *PaxosReplica) getCmdDesc(slot int, msg interface{}) *paxosCommandDesc {
 				return desc
 			}
 
-			desc := r.descPool.Get().(*paxosCommandDesc)
+			desc := r.descPool.Get().(*commandDesc)
 			desc.cmdSlot = -1
 			desc.msgs = make(chan interface{}, 8)
 			desc.active = true
 			desc.phase = START
 			desc.propose = nil
+			desc.cmdId.SeqNum = -1
 
-			desc.twoBs = newMsgSet(r.AQ(), func(msg interface{}) bool {
+			desc.twoBs = yagpaxos.NewMsgSet(r.AQ(), func(msg interface{}) bool {
 				return true
 			}, get2BsHandler(r, desc))
 
@@ -298,17 +343,17 @@ func (r *PaxosReplica) getCmdDesc(slot int, msg interface{}) *paxosCommandDesc {
 			return desc
 		})
 
-	return res.(*paxosCommandDesc)
+	return res.(*commandDesc)
 }
 
-func get2BsHandler(r *PaxosReplica, desc *paxosCommandDesc) msgSetHandler {
+func get2BsHandler(r *Replica, desc *commandDesc) yagpaxos.MsgSetHandler {
 	return func(leaderMsg interface{}, msgs []interface{}) {
 		desc.phase = COMMIT
 		r.deliver(msgs[0].(*M2B).CmdSlot, desc)
 	}
 }
 
-func (r *PaxosReplica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
+func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
 	for p := int32(0); p < int32(r.N); p++ {
 		r.M.Lock()
 		if r.Alive[p] {

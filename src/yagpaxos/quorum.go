@@ -1,17 +1,17 @@
 package yagpaxos
 
-type quorum map[int32]struct{}
+type Quorum map[int32]struct{}
 
-type quorumsOfLeader map[int32]quorum
+type QuorumsOfLeader map[int32]Quorum
 
-type quorumSet map[int32]quorumsOfLeader
+type QuorumSet map[int32]QuorumsOfLeader
 
-func newQuorum(size int) quorum {
+func NewQuorum(size int) Quorum {
 	return make(map[int32]struct{}, size)
 }
 
-func newQuorumOfAll(size int) quorum {
-	q := newQuorum(size)
+func NewQuorumOfAll(size int) Quorum {
+	q := NewQuorum(size)
 
 	for i := int32(0); i < int32(size); i++ {
 		q[i] = struct{}{}
@@ -20,13 +20,13 @@ func newQuorumOfAll(size int) quorum {
 	return q
 }
 
-func (q quorum) contains(repId int32) bool {
+func (q Quorum) Contains(repId int32) bool {
 	_, exists := q[repId]
 	return exists
 }
 
-func (q quorum) copy() quorum {
-	nq := newQuorum(len(q))
+func (q Quorum) copy() Quorum {
+	nq := NewQuorum(len(q))
 
 	for cmdId := range q {
 		nq[cmdId] = struct{}{}
@@ -35,18 +35,18 @@ func (q quorum) copy() quorum {
 	return nq
 }
 
-func newQuorumsOfLeader() quorumsOfLeader {
-	return make(map[int32]quorum)
+func NewQuorumsOfLeader() QuorumsOfLeader {
+	return make(map[int32]Quorum)
 }
 
-func newQuorumSet(quorumSize, repNum int) quorumSet {
+func NewQuorumSet(quorumSize, repNum int) QuorumSet {
 	ids := make([]int32, repNum)
-	q := newQuorum(quorumSize)
-	qs := make(map[int32]quorumsOfLeader, repNum)
+	q := NewQuorum(quorumSize)
+	qs := make(map[int32]QuorumsOfLeader, repNum)
 
 	for id := range ids {
 		ids[id] = int32(id)
-		qs[int32(id)] = newQuorumsOfLeader()
+		qs[int32(id)] = NewQuorumsOfLeader()
 	}
 
 	subsets(ids, repNum, quorumSize, 0, q, qs)
@@ -54,7 +54,7 @@ func newQuorumSet(quorumSize, repNum int) quorumSet {
 	return qs
 }
 
-func (qs quorumSet) AQ(ballot int32) quorum {
+func (qs QuorumSet) AQ(ballot int32) Quorum {
 	l := leader(ballot, len(qs))
 	lqs := qs[l]
 	qid := (ballot / int32(len(qs))) % int32(len(lqs))
@@ -62,7 +62,7 @@ func (qs quorumSet) AQ(ballot int32) quorum {
 }
 
 func subsets(ids []int32, repNum, quorumSize, i int,
-	q quorum, qs quorumSet) {
+	q Quorum, qs QuorumSet) {
 
 	if quorumSize == 0 {
 		for repId := int32(0); repId < int32(repNum); repId++ {

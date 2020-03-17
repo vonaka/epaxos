@@ -1,19 +1,19 @@
 package yagpaxos
 
-type msgSetHandler func(interface{}, []interface{})
+type MsgSetHandler func(interface{}, []interface{})
 
-type msgSet struct {
-	q         quorum
+type MsgSet struct {
+	q         Quorum
 	msgs      []interface{}
 	leaderMsg interface{}
 	accept    func(interface{}) bool
-	handler   msgSetHandler
+	handler   MsgSetHandler
 }
 
-func newMsgSet(q quorum,
-	accept func(interface{}) bool, handler msgSetHandler) *msgSet {
+func NewMsgSet(q Quorum,
+	accept func(interface{}) bool, handler MsgSetHandler) *MsgSet {
 
-	return &msgSet{
+	return &MsgSet{
 		q:         q,
 		msgs:      []interface{}{},
 		leaderMsg: nil,
@@ -22,9 +22,9 @@ func newMsgSet(q quorum,
 	}
 }
 
-func (ms *msgSet) add(repId int32, isLeader bool, msg interface{}) bool {
+func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
 
-	if !ms.q.contains(repId) {
+	if !ms.q.Contains(repId) {
 		return false
 	}
 

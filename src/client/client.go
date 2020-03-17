@@ -29,6 +29,7 @@ var scan *bool = flag.Bool("s", false, "replace read with short scan (100 elemen
 var latency *string = flag.String("delay", "0", "Node latency (in ms).")
 var collocatedWith *string = flag.String("server", "NONE", "Server with which this client is collocated")
 var lfile *string = flag.String("lfile", "NONE", "Latency file.")
+var almostFast *bool = flag.Bool("af", false, "Almost fast (send propose to the leader and collocated server, needed for optimized Paxos).")
 
 func main() {
 
@@ -47,7 +48,7 @@ func main() {
 
 	var proxy *bindings.Parameters
 	for {
-		proxy = bindings.NewParameters(*masterAddr, *masterPort, *verbose, *noLeader, *fast, *localReads)
+		proxy = bindings.NewParameters(*masterAddr, *masterPort, *verbose, *noLeader, *fast, *almostFast, *localReads)
 		err := proxy.Connect()
 		if err == nil {
 			break

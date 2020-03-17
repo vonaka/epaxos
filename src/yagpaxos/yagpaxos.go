@@ -30,7 +30,7 @@ type Replica struct {
 	keys    map[state.Key]keyInfo
 	keysL   sync.Mutex
 
-	qs quorumSet
+	qs QuorumSet
 	cs CommunicationSupply
 
 	descPool sync.Pool
@@ -42,7 +42,7 @@ type commandDesc struct {
 	dep     Dep
 	propose *genericsmr.Propose
 
-	fastAndSlowAcks *msgSet
+	fastAndSlowAcks *MsgSet
 	afterPropagate  *condF
 
 	msgs     chan interface{}
@@ -137,7 +137,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 	}
 
 	r.repchan = NewReplyChan(r)
-	r.qs = newQuorumSet(r.N/2+1, r.N)
+	r.qs = NewQuorumSet(r.N/2+1, r.N)
 
 	r.cs.fastAckRPC =
 		r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
@@ -253,7 +253,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 	desc.propose = msg
 	desc.cmd = msg.Command
 
-	if !r.AQ().contains(r.Id) {
+	if !r.AQ().Contains(r.Id) {
 		desc.phase = PAYLOAD_ONLY
 		desc.afterPropagate.recall()
 		return
@@ -287,12 +287,12 @@ func (r *Replica) handleFastAck(msg *MFastAck, desc *commandDesc) {
 }
 
 func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
-	if !r.AQ().contains(r.Id) {
+	if !r.AQ().Contains(r.Id) {
 		desc.afterPropagate.call(func() {
 			if r.status == NORMAL && r.ballot == msg.Ballot {
 				desc.dep = msg.Dep
 			}
-			desc.fastAndSlowAcks.add(msg.Replica, true, msg)
+			desc.fastAndSlowAcks.Add(msg.Replica, true, msg)
 		})
 		return
 	}
@@ -308,7 +308,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 		// seems to be satisfied already
 
 		desc.phase = ACCEPT
-		desc.fastAndSlowAcks.add(msg.Replica, true, msg)
+		desc.fastAndSlowAcks.Add(msg.Replica, true, msg)
 		dep := Dep(msg.Dep)
 		equals, diffs := desc.dep.EqualsAndDiff(dep)
 
@@ -347,10 +347,10 @@ func (r *Replica) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
 		return
 	}
 
-	desc.fastAndSlowAcks.add(msg.Replica, false, msg)
+	desc.fastAndSlowAcks.Add(msg.Replica, false, msg)
 }
 
-func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) msgSetHandler {
+func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
 	return func(leaderMsg interface{}, msgs []interface{}) {
 
 		if leaderMsg == nil {
@@ -456,7 +456,7 @@ func (r *Replica) leader() int32 {
 	return leader(r.ballot, r.N)
 }
 
-func (r *Replica) AQ() quorum {
+func (r *Replica) AQ() Quorum {
 	return r.qs.AQ(r.ballot)
 }
 
@@ -537,7 +537,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 					(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)
 			}
 
-			desc.fastAndSlowAcks = newMsgSet(r.AQ(), acceptFastAndSlowAck,
+			desc.fastAndSlowAcks = NewMsgSet(r.AQ(), acceptFastAndSlowAck,
 				getFastAndSlowAcksHandler(r, desc))
 
 			go r.handleDesc(desc, cmdId)
@@ -588,9 +588,9 @@ func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
 	}
 }
 
-func (r *Replica) sendTo(q quorum, msg fastrpc.Serializable, rpc uint8) {
+func (r *Replica) sendTo(q Quorum, msg fastrpc.Serializable, rpc uint8) {
 	for p := int32(0); p < int32(r.N); p++ {
-		if !q.contains(p) {
+		if !q.Contains(p) {
 			continue
 		}
 		r.M.Lock()
@@ -603,9 +603,9 @@ func (r *Replica) sendTo(q quorum, msg fastrpc.Serializable, rpc uint8) {
 	}
 }
 
-func (r *Replica) sendExcept(q quorum, msg fastrpc.Serializable, rpc uint8) {
+func (r *Replica) sendExcept(q Quorum, msg fastrpc.Serializable, rpc uint8) {
 	for p := int32(0); p < int32(r.N); p++ {
-		if q.contains(p) {
+		if q.Contains(p) {
 			continue
 		}
 		r.M.Lock()

@@ -48,6 +48,7 @@ var transitiveConflicts *bool = flag.Bool("transitiveconf", true, "Conflict rela
 var latency *string = flag.String("delay", "0", "Node latency (in ms).")
 var collocatedWith *string = flag.String("client", "NONE", "Client with which this server is collocated")
 var lfile *string = flag.String("lfile", "NONE", "Latency file.")
+var qfile *string = flag.String("qfile", "NONE", "Quorum config file (for yagpaxos only).")
 
 func updateLatencies(filename string) {
 	if filename == "NONE" {
@@ -67,8 +68,8 @@ func updateLatencies(filename string) {
 	}
 	defer f.Close()
 
-    s := bufio.NewScanner(f)
-    for s.Scan() {
+	s := bufio.NewScanner(f)
+	for s.Scan() {
 		d := strings.Split(s.Text(), ",")
 		if len(d) != 3 {
 			log.Fatal(filename + ": Wrong file format")
@@ -89,12 +90,12 @@ func updateLatencies(filename string) {
 				genericsmr.AddrLatency[addr.String()] = delay
 			}
 		}
-    }
+	}
 
 	err = s.Err()
-    if err != nil {
-        log.Fatal(err)
-    }
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func main() {
@@ -148,12 +149,12 @@ func main() {
 	} else if *doYagpaxos {
 		log.Println("Starting Yet Another Generalized Paxos replica...")
 		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
-			*lread, *dreply, *maxfailures)
+			*lread, *dreply, *maxfailures, *qfile)
 		rpc.Register(rep)
 	} else if *doOptpaxos {
 		log.Println("Starting optimized Paxos replica...")
 		rep := optpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
-			*lread, *dreply, *maxfailures)
+			*lread, *dreply, *maxfailures, *qfile)
 		rpc.Register(rep)
 	} else {
 		log.Println("Starting classic Paxos replica...")

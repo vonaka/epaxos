@@ -46,8 +46,8 @@ type Parameters struct {
 	id             int32
 	retries        int32
 
-	repChan      chan *fastRep
-	maxCmdId     int32
+	repChan  chan *fastRep
+	maxCmdId int32
 }
 
 type fastRep struct {
@@ -58,7 +58,9 @@ type fastRep struct {
 var (
 	CollocatedWith = "NONE"
 	CollocatedId   = -1
-	Latency time.Duration
+	Latency        = time.Duration(0)
+	IdLatency      = make(map[int]time.Duration)
+	AddrLatency    = make(map[string]time.Duration)
 )
 
 func getClinetId() int32 {
@@ -87,7 +89,7 @@ func NewParameters(masterAddr string, masterPort int,
 		id:             0,
 		retries:        10,
 
-		maxCmdId:     0,
+		maxCmdId: 0,
 	}
 }
 
@@ -172,22 +174,20 @@ func (b *Parameters) Connect() error {
 		b.servers[i] = Dial(b.replicaLists[i], false)
 		b.readers[i] = bufio.NewReader(b.servers[i])
 		b.writers[i] = bufio.NewWriter(b.servers[i])
-		if b.isFast || b.isAlmostFast {
-			go func(rep int) {
+		/*if b.isFast || b.isAlmostFast {
+			go func(delay time.Duration, rep int) {
 				reply := new(genericsmrproto.ProposeReplyTS)
 				for {
 					reply.Unmarshal(b.readers[rep])
-					if rep != CollocatedId {
-						time.Sleep(Latency * time.Millisecond)
-					}
+					time.Sleep(delay)
 					b.repChan <- &fastRep{
 						rep: reply,
 						id:  rep,
 					}
 					// TODO handle errors
 				}
-			}(i)
-		}
+			}(IdLatency[i], i)
+		}*/
 	}
 
 	log.Println("Connected")
@@ -257,6 +257,20 @@ func Call(cli *rpc.Client, method string, args interface{}, reply interface{}) e
 	}
 }
 
+func getDelay(addr string) time.Duration {
+	d, exists := AddrLatency[addr]
+	if exists {
+		return d
+	}
+
+	if addr != CollocatedWith {
+		return Latency
+	}
+
+	d, _ = time.ParseDuration("0ms")
+	return d
+}
+
 func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply) error {
 	// save replica list and closest
 	b.replicaLists = replyRL.ReplicaList
@@ -274,7 +288,9 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 			addr = "127.0.0.1"
 		}
 
-		if addr == CollocatedWith {
+		IdLatency[i] = getDelay(addr)
+
+		if addr == CollocatedWith || IdLatency[i] == time.Duration(0) {
 			found = true
 			CollocatedId = i
 			b.closestReplica = i
@@ -407,7 +423,8 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 		}
 
 		if b.isFast || b.isAlmostFast {
-			value, err = b.fastWaitReplies(args.CommandId)
+			value, err = b.waitReplies(CollocatedId, args.CommandId)
+			//value, err = b.fastWaitReplies(args.CommandId)
 		} else {
 			value, err = b.waitReplies(submitter, args.CommandId)
 		}
@@ -475,8 +492,6 @@ func (b *Parameters) waitReplies(submitter int,
 		}
 	}
 
-	if submitter != CollocatedId {
-		time.Sleep(Latency)
-	}
+	time.Sleep(IdLatency[submitter])
 	return ret, err
 }

@@ -1,12 +1,15 @@
 package yagpaxos
 
 import (
+	"bufio"
 	"dlog"
 	"fastrpc"
 	"fmt"
 	"genericsmr"
 	"log"
+	"os"
 	"state"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +33,7 @@ type Replica struct {
 	keys    map[state.Key]keyInfo
 	keysL   sync.Mutex
 
+	AQ Quorum
 	qs QuorumSet
 	cs CommunicationSupply
 
@@ -91,7 +95,7 @@ type CommunicationSupply struct {
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply bool, failures int) *Replica {
+	thrifty, exec, lread, dreply bool, failures int, qfile string) *Replica {
 
 	r := &Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
@@ -139,6 +143,12 @@ func NewReplica(replicaId int, peerAddrs []string,
 	r.repchan = NewReplyChan(r)
 	r.qs = NewQuorumSet(r.N/2+1, r.N)
 
+	if qfile == "NONE" {
+		r.AQ = r.qs.AQ(r.ballot)
+	} else {
+		r.initQuorumAndLeader(qfile)
+	}
+
 	r.cs.fastAckRPC =
 		r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
 	r.cs.slowAckRPC =
@@ -178,6 +188,51 @@ func NewReplica(replicaId int, peerAddrs []string,
 	go r.run()
 
 	return r
+}
+
+func (r *Replica) initQuorumAndLeader(qfile string) {
+	f, err := os.Open(qfile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	AQ := NewQuorum(r.N/2 + 1)
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		id := r.Id
+		isLeader := false
+		addr := ""
+
+		data := strings.Split(s.Text(), " ")
+		if len(data) == 1 {
+			addr = data[0]
+		} else {
+			isLeader = true
+			addr = data[1]
+		}
+
+		for rid := int32(0); rid < int32(r.N); rid++ {
+			paddr := strings.Split(r.PeerAddrList[rid], ":")[0]
+			if addr == paddr {
+				id = rid
+				break
+			}
+		}
+
+		AQ[id] = struct{}{}
+		if isLeader {
+			r.ballot = id
+			r.cballot = id
+		}
+	}
+
+	r.AQ = AQ
+
+	err = s.Err()
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func (r *Replica) run() {
@@ -253,7 +308,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 	desc.propose = msg
 	desc.cmd = msg.Command
 
-	if !r.AQ().Contains(r.Id) {
+	if !r.AQ.Contains(r.Id) {
 		desc.phase = PAYLOAD_ONLY
 		desc.afterPropagate.recall()
 		return
@@ -287,7 +342,7 @@ func (r *Replica) handleFastAck(msg *MFastAck, desc *commandDesc) {
 }
 
 func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
-	if !r.AQ().Contains(r.Id) {
+	if !r.AQ.Contains(r.Id) {
 		desc.afterPropagate.call(func() {
 			if r.status == NORMAL && r.ballot == msg.Ballot {
 				desc.dep = msg.Dep
@@ -456,10 +511,6 @@ func (r *Replica) leader() int32 {
 	return leader(r.ballot, r.N)
 }
 
-func (r *Replica) AQ() Quorum {
-	return r.qs.AQ(r.ballot)
-}
-
 func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 	for desc.active {
 		switch msg := (<-desc.msgs).(type) {
@@ -537,7 +588,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 					(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)
 			}
 
-			desc.fastAndSlowAcks = NewMsgSet(r.AQ(), acceptFastAndSlowAck,
+			desc.fastAndSlowAcks = NewMsgSet(r.AQ, acceptFastAndSlowAck,
 				getFastAndSlowAcksHandler(r, desc))
 
 			go r.handleDesc(desc, cmdId)

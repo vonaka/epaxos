@@ -1,13 +1,16 @@
 package optpaxos
 
 import (
+	"bufio"
 	"dlog"
 	"fastrpc"
 	"genericsmr"
 	"genericsmrproto"
 	"log"
+	"os"
 	"state"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 	"yagpaxos"
@@ -32,9 +35,11 @@ type Replica struct {
 	proposes    cmap.ConcurrentMap
 	history     []commandStaticDesc
 
+	AQ yagpaxos.Quorum
 	qs yagpaxos.QuorumSet
 	cs communicationSupply
 
+	fileInit bool
 	descPool sync.Pool
 }
 
@@ -74,7 +79,7 @@ type communicationSupply struct {
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply bool, failures int) *Replica {
+	thrifty, exec, lread, dreply bool, failures int, qfile string) *Replica {
 
 	r := &Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
@@ -107,6 +112,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 				genericsmr.CHAN_BUFFER_SIZE),
 		},
 
+		fileInit: false,
+
 		descPool: sync.Pool{
 			New: func() interface{} {
 				return &commandDesc{}
@@ -115,6 +122,13 @@ func NewReplica(replicaId int, peerAddrs []string,
 	}
 
 	r.qs = yagpaxos.NewQuorumSet(r.N/2+1, r.N)
+
+	if qfile == "NONE" {
+		r.AQ = r.qs.AQ(r.ballot)
+	} else {
+		r.fileInit = true
+		r.initQuorumAndLeader(qfile)
+	}
 
 	r.cs.oneARPC = r.RegisterRPC(new(M1A), r.cs.oneAChan)
 	r.cs.oneBRPC = r.RegisterRPC(new(M1B), r.cs.oneBChan)
@@ -125,6 +139,54 @@ func NewReplica(replicaId int, peerAddrs []string,
 	go r.run()
 
 	return r
+}
+
+func (r *Replica) initQuorumAndLeader(qfile string) {
+	f, err := os.Open(qfile)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	AQ := yagpaxos.NewQuorum(r.N/2 + 1)
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		id := r.Id
+		isLeader := false
+		addr := ""
+
+		data := strings.Split(s.Text(), " ")
+		if len(data) == 1 {
+			addr = data[0]
+		} else {
+			isLeader = true
+			addr = data[1]
+		}
+
+		for rid := int32(0); rid < int32(r.N); rid++ {
+			paddr := strings.Split(r.PeerAddrList[rid], ":")[0]
+			if addr == paddr {
+				id = rid
+				break
+			}
+		}
+
+		AQ[id] = struct{}{}
+		if isLeader {
+			r.ballot = id
+			r.cballot = id
+			if id == r.Id {
+				r.isLeader = isLeader
+			}
+		}
+	}
+
+	r.AQ = AQ
+
+	err = s.Err()
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
 func (r *Replica) run() {
@@ -157,11 +219,11 @@ func (r *Replica) run() {
 				r.proposes.Set(cmdId.String(), propose)
 			}
 
-		case m :=<-r.cs.twoAChan:
+		case m := <-r.cs.twoAChan:
 			twoA := m.(*M2A)
 			r.getCmdDesc(twoA.CmdSlot, twoA)
 
-		case m :=<-r.cs.twoBChan:
+		case m := <-r.cs.twoBChan:
 			twoB := m.(*M2B)
 			r.getCmdDesc(twoB.CmdSlot, twoB)
 		}
@@ -177,11 +239,17 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 
 	desc.propose = msg
 
+	defer func() {
+		// deliver a command which waits for
+		// a propose
+		desc.msgs <- "deliver"
+	}()
+
 	twoA := &M2A{
 		Replica: r.Id,
 		Ballot:  r.ballot,
 		Cmd:     msg.Command,
-		CmdId:   CommandId{
+		CmdId: CommandId{
 			ClientId: msg.ClientId,
 			SeqNum:   msg.CommandId,
 		},
@@ -209,7 +277,7 @@ func (r *Replica) handle2A(msg *M2A, desc *commandDesc) {
 		}()
 	}
 
-	if !r.AQ().Contains(r.Id) {
+	if !r.AQ.Contains(r.Id) {
 		return
 	}
 
@@ -240,7 +308,7 @@ func (r *Replica) deliver(slot int, desc *commandDesc) {
 		return
 	}
 
-	if slot > 0 && !r.delivered.Has(strconv.Itoa(slot - 1)) {
+	if slot > 0 && !r.delivered.Has(strconv.Itoa(slot-1)) {
 		return
 	}
 
@@ -295,12 +363,11 @@ func (r *Replica) handleDesc(desc *commandDesc, slot int) {
 	}
 }
 
-func (r *Replica) AQ() yagpaxos.Quorum {
-	return r.qs.AQ(r.ballot)
-}
-
 func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 	reply *genericsmrproto.BeTheLeaderReply) error {
+	if r.fileInit {
+		return nil
+	}
 	r.isLeader = true
 	return nil
 }
@@ -330,7 +397,7 @@ func (r *Replica) getCmdDesc(slot int, msg interface{}) *commandDesc {
 			desc.propose = nil
 			desc.cmdId.SeqNum = -1
 
-			desc.twoBs = yagpaxos.NewMsgSet(r.AQ(), func(msg interface{}) bool {
+			desc.twoBs = yagpaxos.NewMsgSet(r.AQ, func(msg interface{}) bool {
 				return true
 			}, get2BsHandler(r, desc))
 

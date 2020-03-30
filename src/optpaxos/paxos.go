@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"dlog"
 	"fastrpc"
+	"fmt"
 	"genericsmr"
 	"genericsmrproto"
 	"log"
@@ -18,7 +19,7 @@ import (
 	"github.com/orcaman/concurrent-map"
 )
 
-const HISTORY_SIZE = 1001001
+const HISTORY_SIZE = 10010001
 
 type Replica struct {
 	*genericsmr.Replica
@@ -135,6 +136,18 @@ func NewReplica(replicaId int, peerAddrs []string,
 	r.cs.twoARPC = r.RegisterRPC(new(M2A), r.cs.twoAChan)
 	r.cs.twoBRPC = r.RegisterRPC(new(M2B), r.cs.twoBChan)
 	r.cs.syncRPC = r.RegisterRPC(new(MPaxosSync), r.cs.twoBChan)
+
+	yagpaxos.HookUser1(func() {
+		totalNum := 0
+		for i := 0; i < HISTORY_SIZE; i++ {
+			if r.history[i].phase == 0 {
+				continue
+			}
+			totalNum++
+		}
+
+		fmt.Printf("Total number of commands: %d\n", totalNum)
+	})
 
 	go r.run()
 

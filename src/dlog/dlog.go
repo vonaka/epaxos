@@ -1,6 +1,9 @@
 package dlog
 
-import "log"
+import (
+	"log"
+	"os"
+)
 
 const DLOG = false
 
@@ -16,4 +19,8 @@ func Println(v ...interface{}) {
 		return
 	}
 	log.Println(v...)
+}
+
+func NewFileLogger(file *os.File) *log.Logger {
+	return log.New(file, "", log.LstdFlags)
 }

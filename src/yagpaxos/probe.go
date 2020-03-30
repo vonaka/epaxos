@@ -25,7 +25,7 @@ func newProbe(name string) *probe {
 		minDuration: -1,
 	}
 
-	hookUser1(func() {
+	HookUser1(func() {
 		fmt.Println(p)
 	})
 
@@ -68,7 +68,7 @@ func (p *probe) String() string {
 		p.minDuration, p.maxDuration, p.n)
 }
 
-func hookUser1(f func()) {
+func HookUser1(f func()) {
 	user1 := make(chan os.Signal, 1)
 	signal.Notify(user1, syscall.SIGUSR1)
 

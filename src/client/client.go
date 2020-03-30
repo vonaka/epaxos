@@ -3,6 +3,7 @@ package main
 import (
 	"bindings"
 	"bufio"
+	"dlog"
 	"flag"
 	"fmt"
 	"log"
@@ -11,30 +12,44 @@ import (
 	"os"
 	"runtime"
 	"state"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-var clientId string = *flag.String("id", "", "the id of the client. Default is RFC 4122 nodeID.")
-var masterAddr *string = flag.String("maddr", "", "Master address. Defaults to localhost")
-var masterPort *int = flag.Int("mport", 7087, "Master port. ")
-var reqsNb *int = flag.Int("q", 1000, "Total number of requests. ")
-var writes *int = flag.Int("w", 100, "Percentage of updates (writes). ")
+var clientId string = *flag.String("id", "",
+	"The id of the client. Default is RFC 4122 nodeID.")
+var masterAddr *string = flag.String("maddr", "",
+	"Master address. Defaults to localhost")
+var masterPort *int = flag.Int("mport", 7087, "Master port.")
+var reqsNb *int = flag.Int("q", 1000, "Total number of requests.")
+var writes *int = flag.Int("w", 100, "Percentage of updates (writes).")
 var psize *int = flag.Int("psize", 100, "Payload size for writes.")
-var noLeader *bool = flag.Bool("e", false, "Egalitarian (no leader). ")
-var fast *bool = flag.Bool("f", false, "Fast Paxos: send message directly to all replicas. ")
-var localReads *bool = flag.Bool("l", false, "Execute reads at the closest (local) replica. ")
-var procs *int = flag.Int("p", 2, "GOMAXPROCS. ")
+var noLeader *bool = flag.Bool("e", false, "Egalitarian (no leader).")
+var fast *bool = flag.Bool("f", false,
+	"Fast Paxos: send message directly to all replicas. ")
+var localReads *bool = flag.Bool("l", false,
+	"Execute reads at the closest (local) replica. ")
+var procs *int = flag.Int("p", 2, "GOMAXPROCS.")
 var conflicts *int = flag.Int("c", 0, "Percentage of conflicts. Defaults to 0%")
-var verbose *bool = flag.Bool("v", false, "verbose mode. ")
-var scan *bool = flag.Bool("s", false, "replace read with short scan (100 elements)")
+var verbose *bool = flag.Bool("v", false, "Verbose mode.")
+var scan *bool = flag.Bool("s", false,
+	"Replace read with short scan (100 elements)")
 var latency *string = flag.String("delay", "0", "Node latency (in ms).")
-var collocatedWith *string = flag.String("server", "NONE", "Server with which this client is collocated")
+var collocatedWith *string = flag.String("server", "NONE",
+	"Server with which this client is collocated")
 var lfile *string = flag.String("lfile", "NONE", "Latency file.")
-var almostFast *bool = flag.Bool("af", false, "Almost fast (send propose to the leader and collocated server, needed for optimized Paxos).")
-var myAddr *string = flag.String("addr", "", "Client address (this machine). Defaults to localhost.")
+var almostFast *bool = flag.Bool("af", false,
+	"Almost fast (send propose to the leader and collocated server, " +
+		"needed for optimized Paxos).")
+var myAddr *string = flag.String("addr", "",
+	"Client address (this machine). Defaults to localhost.")
+var cloneNb *int = flag.Int("clone", 0,
+	"Number of clones (unique clients acting like this one).")
+var logFile *string = flag.String("logf", "", "Path to the log file.")
 
 func updateLatencies(filename string) {
 	if filename == "NONE" {
@@ -101,9 +116,36 @@ func main() {
 	bindings.Latency, _ = time.ParseDuration(*latency + "ms")
 	bindings.CollocatedWith = *collocatedWith
 
+	var wg sync.WaitGroup
+	for i := 0; i < *cloneNb; i++ {
+		go func(i int) {
+			wg.Add(1)
+			runProxy(*logFile + strconv.Itoa(i))
+			wg.Done()
+		}(i)
+	}
+	runProxy(*logFile)
+	wg.Wait()
+}
+
+func runProxy(logPath string) {
+
+	logF := os.Stdout
+	if logPath != "" {
+		logF_0,
+		/* stupid golang! why are you forcing me to create new variables? */
+		err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Fatal("Can't open log file:", logPath)
+		}
+		logF = logF_0
+	}
+	logger := dlog.NewFileLogger(logF)
+
 	var proxy *bindings.Parameters
 	for {
-		proxy = bindings.NewParameters(*masterAddr, *masterPort, *verbose, *noLeader, *fast, *almostFast, *localReads)
+		proxy = bindings.NewParameters(*masterAddr, *masterPort,
+			*verbose, *noLeader, *fast, *almostFast, *localReads, logger)
 		err := proxy.Connect()
 		if err == nil {
 			break
@@ -115,7 +157,9 @@ func main() {
 		clientId = uuid.New().String()
 	}
 
-	log.Printf("client: %v (verbose=%v, psize=%v, conflicts=%v)", clientId, *verbose, *psize, *conflicts)
+	logger.Printf("client: %v (verbose=%v, psize=%v, conflicts=%v)",
+		clientId, *verbose, *psize, *conflicts)
+	logger.Printf("bindingId: %v", proxy.Id())
 
 	karray := make([]state.Key, *reqsNb)
 	put := make([]bool, *reqsNb)
@@ -175,8 +219,8 @@ func main() {
 
 		if j != 0 {
 			duration := after.Sub(before)
-			fmt.Printf("latency %v\n", to_ms(duration.Nanoseconds()))
-			fmt.Printf("chain %d-1\n", int64(to_ms(after.UnixNano())))
+			fmt.Fprintf(logF, "latency %v\n", to_ms(duration.Nanoseconds()))
+			fmt.Fprintf(logF, "chain %d-1\n", int64(to_ms(after.UnixNano())))
 		}
 	}
 
@@ -184,7 +228,7 @@ func main() {
 	// fmt.Printf(proxy.Stats() + "\n")
 
 	after_total := time.Now()
-	fmt.Printf("Test took %v\n", after_total.Sub(before_total))
+	fmt.Fprintf(logF, "Test took %v\n", after_total.Sub(before_total))
 
 	proxy.Disconnect()
 }

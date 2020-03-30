@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/rpc"
+	"os"
 	"os/exec"
 	"state"
 	"strconv"
@@ -48,6 +49,14 @@ type Parameters struct {
 
 	repChan  chan *fastRep
 	maxCmdId int32
+
+	collocatedWith string
+	collocatedId   int
+	latency        time.Duration
+	idLatency      map[int]time.Duration
+	addrLatency    map[string]time.Duration
+
+	logger *log.Logger
 }
 
 type fastRep struct {
@@ -57,9 +66,7 @@ type fastRep struct {
 
 var (
 	CollocatedWith = "NONE"
-	CollocatedId   = -1
 	Latency        = time.Duration(0)
-	IdLatency      = make(map[int]time.Duration)
 	AddrLatency    = make(map[string]time.Duration)
 )
 
@@ -68,9 +75,14 @@ func getClinetId() int32 {
 }
 
 func NewParameters(masterAddr string, masterPort int,
-	verbose, leaderless, fast, almostFast, localReads bool) *Parameters {
+	verbose, leaderless, fast, almostFast, localReads bool,
+	logger *log.Logger) *Parameters {
 
-	return &Parameters{
+	if logger == nil {
+		logger = log.New(os.Stderr, "", log.LstdFlags)
+	}
+
+	p := &Parameters{
 		clientId:       getClinetId(),
 		masterAddr:     masterAddr,
 		masterPort:     masterPort,
@@ -90,24 +102,43 @@ func NewParameters(masterAddr string, masterPort int,
 		retries:        10,
 
 		maxCmdId: 0,
+
+		collocatedWith: CollocatedWith,
+		collocatedId:   -1,
+		latency:        Latency,
+		idLatency:      make(map[int]time.Duration),
+		addrLatency:    make(map[string]time.Duration),
+
+		logger: logger,
 	}
+
+	for k,v := range AddrLatency {
+		p.addrLatency[k] = v
+	}
+
+	return p
+}
+
+func (b *Parameters) Id() int32 {
+	return b.clientId
 }
 
 func (b *Parameters) Connect() error {
 	var err error
 
-	log.Printf("Dialing master...\n")
+	b.logger.Printf("Dialing master...\n")
 	var master *rpc.Client
 	master = b.MasterDial()
 
-	log.Printf("Getting replica list from master...\n")
+	b.logger.Printf("Getting replica list from master...\n")
 	var replyRL *masterproto.GetReplicaListReply
 
 	// loop until the call succeeds
 	// (or too many attempts)
 	for i, done := 0, false; !done; i++ {
 		replyRL = new(masterproto.GetReplicaListReply)
-		err = Call(master, "Master.GetReplicaList", new(masterproto.GetReplicaListArgs), replyRL)
+		err = Call(master, "Master.GetReplicaList",
+			new(masterproto.GetReplicaListArgs), replyRL, b.logger)
 		if err == nil && replyRL.Ready {
 			done = true
 		} else if i == MAX_ATTEMPTS {
@@ -122,7 +153,7 @@ func (b *Parameters) Connect() error {
 	if err != nil {
 		return err
 	}
-	log.Printf("node list %v, closest (alive) = %v", b.replicaLists, b.closestReplica)
+	b.logger.Printf("node list %v, closest (alive) = %v", b.replicaLists, b.closestReplica)
 
 	// init some parameters
 	b.n = len(b.replicaLists)
@@ -141,12 +172,13 @@ func (b *Parameters) Connect() error {
 		}
 	} else {
 		if !b.leaderless {
-			log.Printf("Getting leader from master...\n")
+			b.logger.Printf("Getting leader from master...\n")
 			var replyL *masterproto.GetLeaderReply
 
 			for i, done := 0, false; !done; i++ {
 				replyL = new(masterproto.GetLeaderReply)
-				err = Call(master, "Master.GetLeader", new(masterproto.GetLeaderArgs), replyL)
+				err = Call(master, "Master.GetLeader",
+					new(masterproto.GetLeaderArgs), replyL, b.logger)
 				if err == nil {
 					done = true
 				} else if i == MAX_ATTEMPTS {
@@ -160,18 +192,18 @@ func (b *Parameters) Connect() error {
 			if b.closestReplica != b.Leader {
 				toConnect = append(toConnect, b.Leader)
 			}
-			log.Printf("The Leader is replica %d\n", b.Leader)
+			b.logger.Printf("The Leader is replica %d\n", b.Leader)
 		}
 		if b.isAlmostFast {
-			toConnect = append(toConnect, CollocatedId)
+			toConnect = append(toConnect, b.collocatedId)
 		} else {
 			toConnect = append(toConnect, b.closestReplica)
 		}
 	}
 
 	for _, i := range toConnect {
-		log.Println("Connection to ", i, " -> ", b.replicaLists[i])
-		b.servers[i] = Dial(b.replicaLists[i], false)
+		b.logger.Println("Connection to ", i, " -> ", b.replicaLists[i])
+		b.servers[i] = Dial(b.replicaLists[i], false, b.logger)
 		b.readers[i] = bufio.NewReader(b.servers[i])
 		b.writers[i] = bufio.NewWriter(b.servers[i])
 		/*if b.isFast || b.isAlmostFast {
@@ -190,12 +222,12 @@ func (b *Parameters) Connect() error {
 		}*/
 	}
 
-	log.Println("Connected")
+	b.logger.Println("Connected")
 
 	return nil
 }
 
-func Dial(addr string, connect bool) net.Conn {
+func Dial(addr string, connect bool, logger *log.Logger) net.Conn {
 	var conn net.Conn
 	var err error
 	var resp *http.Response
@@ -218,11 +250,11 @@ func Dial(addr string, connect bool) net.Conn {
 
 		if try == 2 {
 			// if not done yet, try again
-			log.Println("Connection error with ", addr, ": ", err)
+			logger.Println("Connection error with ", addr, ": ", err)
 			if conn != nil {
 				conn.Close()
 			}
-			log.Fatal("Will not try anymore")
+			logger.Fatal("Will not try anymore")
 		}
 	}
 
@@ -235,36 +267,38 @@ func (b *Parameters) MasterDial() *rpc.Client {
 	var conn net.Conn
 
 	addr = fmt.Sprintf("%s:%d", b.masterAddr, b.masterPort)
-	conn = Dial(addr, true)
+	conn = Dial(addr, true, b.logger)
 	master = rpc.NewClient(conn)
 
 	return master
 }
 
-func Call(cli *rpc.Client, method string, args interface{}, reply interface{}) error {
+func Call(cli *rpc.Client, method string,
+	args interface{}, reply interface{}, logger *log.Logger) error {
+
 	c := make(chan error, 1)
 	go func() { c <- cli.Call(method, args, reply) }()
 	select {
 	case err := <-c:
 		if err != nil {
-			log.Printf("Error in RPC: " + method)
+			logger.Printf("Error in RPC: " + method)
 		}
 		return err
 
 	case <-time.After(TIMEOUT):
-		log.Printf("RPC timeout: " + method)
+		logger.Printf("RPC timeout: " + method)
 		return errors.New("RPC timeout")
 	}
 }
 
-func getDelay(addr string) time.Duration {
-	d, exists := AddrLatency[addr]
+func (p *Parameters) getDelay(addr string) time.Duration {
+	d, exists := p.addrLatency[addr]
 	if exists {
 		return d
 	}
 
-	if addr != CollocatedWith {
-		return Latency
+	if addr != p.collocatedWith {
+		return p.latency
 	}
 
 	d, _ = time.ParseDuration("0ms")
@@ -275,7 +309,7 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 	// save replica list and closest
 	b.replicaLists = replyRL.ReplicaList
 
-	log.Printf("Pinging all replicas...\n")
+	b.logger.Printf("Pinging all replicas...\n")
 
 	found := false
 	minLatency := math.MaxFloat64
@@ -288,11 +322,11 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 			addr = "127.0.0.1"
 		}
 
-		IdLatency[i] = getDelay(addr)
+		b.idLatency[i] = b.getDelay(addr)
 
-		if addr == CollocatedWith || IdLatency[i] == time.Duration(0) {
+		if addr == b.collocatedWith || b.idLatency[i] == time.Duration(0) {
 			found = true
-			CollocatedId = i
+			b.collocatedId = i
 			b.closestReplica = i
 		}
 
@@ -300,7 +334,7 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 		if err == nil {
 			// parse ping output
 			latency, _ := strconv.ParseFloat(strings.Split(string(out), "/")[4], 64)
-			log.Printf("%v -> %v", i, latency)
+			b.logger.Printf("%v -> %v", i, latency)
 
 			// save if closest replica
 			if minLatency > latency && !found {
@@ -308,7 +342,7 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 				minLatency = latency
 			}
 		} else {
-			log.Printf("cannot ping " + b.replicaLists[i])
+			b.logger.Printf("cannot ping " + b.replicaLists[i])
 			return err
 		}
 	}
@@ -322,7 +356,7 @@ func (b *Parameters) Disconnect() {
 			server.Close()
 		}
 	}
-	log.Printf("Disconnected")
+	b.logger.Printf("Disconnected")
 }
 
 // not idempotent in case of a failure
@@ -336,7 +370,7 @@ func (b *Parameters) Write(key int64, value []byte) {
 	}
 
 	if b.verbose {
-		log.Println(args.Command.String())
+		b.logger.Println(args.Command.String())
 	}
 
 	b.execute(args)
@@ -352,7 +386,7 @@ func (b *Parameters) Read(key int64) []byte {
 	}
 
 	if b.verbose {
-		log.Println(args.Command.String())
+		b.logger.Println(args.Command.String())
 	}
 
 	return b.execute(args)
@@ -370,7 +404,7 @@ func (b *Parameters) Scan(key int64, count int64) []byte {
 	binary.LittleEndian.PutUint64(args.Command.V, uint64(count))
 
 	if b.verbose {
-		log.Println(args.Command.String())
+		b.logger.Println(args.Command.String())
 	}
 
 	return b.execute(args)
@@ -402,14 +436,14 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 			args.Marshal(b.writers[submitter])
 			b.writers[submitter].Flush()
 			if b.verbose {
-				log.Println("Sent to ", submitter)
+				b.logger.Println("Sent to ", submitter)
 			}
 		} else {
 			if b.verbose {
 				if b.isFast {
-					log.Println("Sent to everyone", args.CommandId)
+					b.logger.Println("Sent to everyone", args.CommandId)
 				} else {
-					log.Println("Sned to leader and collocated server",
+					b.logger.Println("Sned to leader and collocated server",
 						args.CommandId)
 				}
 			}
@@ -423,7 +457,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 		}
 
 		if b.isFast || b.isAlmostFast {
-			value, err = b.waitReplies(CollocatedId, args.CommandId)
+			value, err = b.waitReplies(b.collocatedId, args.CommandId)
 			//value, err = b.fastWaitReplies(args.CommandId)
 		} else {
 			value, err = b.waitReplies(submitter, args.CommandId)
@@ -431,18 +465,18 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 
 		if err != nil {
 
-			log.Println("Error: ", err)
+			b.logger.Println("Error: ", err)
 
 			for err != nil && b.retries > 0 {
 				b.retries--
 				b.Disconnect()
-				log.Println("Reconnecting ...")
+				b.logger.Println("Reconnecting ...")
 				time.Sleep(TIMEOUT) // must be inline with the closest quorum re-computation
 				err = b.Connect()
 			}
 
 			if err != nil && b.retries == 0 {
-				log.Fatal("Cannot recover.")
+				b.logger.Fatal("Cannot recover.")
 			}
 
 		}
@@ -450,7 +484,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	}
 
 	if b.verbose {
-		log.Println("Returning: ", value.String())
+		b.logger.Println("Returning: ", value.String())
 	}
 
 	return value
@@ -492,6 +526,6 @@ func (b *Parameters) waitReplies(submitter int,
 		}
 	}
 
-	time.Sleep(IdLatency[submitter])
+	time.Sleep(b.idLatency[submitter])
 	return ret, err
 }

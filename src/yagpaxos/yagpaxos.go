@@ -16,7 +16,7 @@ import (
 	"github.com/orcaman/concurrent-map"
 )
 
-const HISTORY_SIZE = 1001001
+const HISTORY_SIZE = 10010001
 
 type Replica struct {
 	*genericsmr.Replica
@@ -168,7 +168,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 	r.cs.collectRPC =
 		r.RegisterRPC(new(MCollect), r.cs.collectChan)
 
-	hookUser1(func() {
+	HookUser1(func() {
 		totalNum := 0
 		slowPaths := 0
 		for i := 0; i < HISTORY_SIZE; i++ {

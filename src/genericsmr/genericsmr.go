@@ -40,8 +40,9 @@ type RPCPair struct {
 
 type Propose struct {
 	*genericsmrproto.Propose
-	Reply *bufio.Writer
-	Mutex *sync.Mutex
+	Reply     *bufio.Writer
+	Mutex     *sync.Mutex
+	Collocated bool
 }
 
 type Beacon struct {
@@ -398,9 +399,10 @@ func (r *Replica) clientListener(conn net.Conn) {
 					time.Sleep(delay)
 					r.ProposeChan <- propose
 				}(&Propose{
-					Propose: propose,
-					Reply:   writer,
-					Mutex:   mutex,
+					Propose:    propose,
+					Reply:      writer,
+					Mutex:      mutex,
+					Collocated: delay == 0,
 				})
 			}
 			break

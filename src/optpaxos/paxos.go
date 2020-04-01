@@ -325,6 +325,14 @@ func (r *Replica) deliver(slot int, desc *commandDesc) {
 		return
 	}
 
+	p, exists := r.proposes.Get(desc.cmdId.String())
+	if exists {
+		desc.propose = p.(*genericsmr.Propose)
+	}
+	if desc.propose == nil {
+		return
+	}
+
 	r.delivered.Set(strconv.Itoa(slot), struct{}{})
 	r.getCmdDesc(slot+1, "deliver")
 	r.history[slot].cmdSlot = slot
@@ -337,12 +345,7 @@ func (r *Replica) deliver(slot int, desc *commandDesc) {
 	dlog.Printf("Executing " + desc.cmd.String())
 	v := desc.cmd.Execute(r.State)
 
-	p, exists := r.proposes.Get(desc.cmdId.String())
-	if exists {
-		desc.propose = p.(*genericsmr.Propose)
-	}
-
-	if desc.propose == nil || !r.Dreply {
+	if !desc.propose.Collocated || !r.Dreply {
 		return
 	}
 

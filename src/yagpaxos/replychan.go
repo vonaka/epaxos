@@ -31,11 +31,14 @@ func NewReplyChan(r *Replica) *replyChan {
 		for !r.Shutdown {
 			args := <-rc.args
 
-			rc.rep.CommandId = args.propose.CommandId
-			rc.rep.Value = args.val
-			rc.rep.Timestamp = args.propose.Timestamp
+			if args.propose.Collocated {
+				rc.rep.CommandId = args.propose.CommandId
+				rc.rep.Value = args.val
+				rc.rep.Timestamp = args.propose.Timestamp
 
-			r.ReplyProposeTS(rc.rep, args.propose.Reply, args.propose.Mutex)
+				r.ReplyProposeTS(rc.rep, args.propose.Reply, args.propose.Mutex)
+			}
+
 			args.finish <- slot
 			slot = (slot + 1) % HISTORY_SIZE
 		}

@@ -252,17 +252,11 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 
 	desc.propose = msg
 
-	defer func() {
-		// deliver a command which waits for
-		// a propose
-		desc.msgs <- "deliver"
-	}()
-
 	twoA := &M2A{
 		Replica: r.Id,
 		Ballot:  r.ballot,
 		Cmd:     msg.Command,
-		CmdId: CommandId{
+		CmdId:   CommandId{
 			ClientId: msg.ClientId,
 			SeqNum:   msg.CommandId,
 		},
@@ -330,17 +324,18 @@ func (r *Replica) deliver(slot int, desc *commandDesc) {
 		desc.propose = p.(*genericsmr.Propose)
 	}
 	if desc.propose == nil {
+		go func() {
+			for desc.active {
+				time.Sleep(20 * time.Millisecond)
+				desc.msgs <- "deliver"
+			}
+		}()
 		return
 	}
 
 	r.delivered.Set(strconv.Itoa(slot), struct{}{})
+	desc.msgs <- slot
 	r.getCmdDesc(slot+1, "deliver")
-	r.history[slot].cmdSlot = slot
-	r.history[slot].phase = desc.phase
-	r.history[slot].cmd = desc.cmd
-	desc.active = false
-	r.cmdDescs.Remove(strconv.Itoa(slot))
-	defer r.descPool.Put(desc)
 
 	dlog.Printf("Executing " + desc.cmd.String())
 	v := desc.cmd.Execute(r.State)
@@ -375,6 +370,15 @@ func (r *Replica) handleDesc(desc *commandDesc, slot int) {
 			if msg == "deliver" {
 				r.deliver(slot, desc)
 			}
+
+		case  int:
+			r.history[slot].cmdSlot = slot
+			r.history[slot].phase = desc.phase
+			r.history[slot].cmd = desc.cmd
+			desc.active = false
+			r.cmdDescs.Remove(strconv.Itoa(slot))
+			r.descPool.Put(desc)
+			return
 		}
 	}
 }
@@ -384,7 +388,7 @@ func (r *Replica) BeTheLeader(args *genericsmrproto.BeTheLeaderArgs,
 	if r.fileInit {
 		return nil
 	}
-	r.isLeader = true
+	//r.isLeader = true
 	return nil
 }
 
@@ -432,7 +436,7 @@ func (r *Replica) getCmdDesc(slot int, msg interface{}) *commandDesc {
 func get2BsHandler(r *Replica, desc *commandDesc) yagpaxos.MsgSetHandler {
 	return func(leaderMsg interface{}, msgs []interface{}) {
 		desc.phase = COMMIT
-		r.deliver(msgs[0].(*M2B).CmdSlot, desc)
+		desc.msgs <- "deliver"
 	}
 }
 

@@ -1,20 +1,20 @@
 package yagpaxos
 
-type condF struct {
+type CondF struct {
 	cond  func() bool
 	fun   func()
 	wanna bool
 }
 
-func newCondF(cond func() bool) *condF {
-	return &condF{
+func NewCondF(cond func() bool) *CondF {
+	return &CondF{
 		cond:  cond,
 		fun:   func() {},
 		wanna: false,
 	}
 }
 
-func (cf *condF) call(f func()) bool {
+func (cf *CondF) Call(f func()) bool {
 	if cf.cond() {
 		f()
 		cf.fun = func() {}
@@ -33,7 +33,7 @@ func (cf *condF) call(f func()) bool {
 	}
 }
 
-func (cf *condF) recall() bool {
+func (cf *CondF) Recall() bool {
 	if cf.wanna && cf.cond() {
 		cf.fun()
 		cf.fun = func() {}
@@ -45,14 +45,14 @@ func (cf *condF) recall() bool {
 	return false
 }
 
-func (cf *condF) andCond(cond func() bool) {
+func (cf *CondF) AndCond(cond func() bool) {
 	oldCond := cf.cond
 	cf.cond = func() bool {
 		return oldCond() && cond()
 	}
 }
 
-func (cf *condF) orCond(cond func() bool) {
+func (cf *CondF) OrCond(cond func() bool) {
 	oldCond := cf.cond
 	cf.cond = func() bool {
 		return oldCond() || cond()

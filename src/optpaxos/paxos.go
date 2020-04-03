@@ -53,6 +53,8 @@ type commandDesc struct {
 	propose *genericsmr.Propose
 	twoBs   *yagpaxos.MsgSet
 
+	afterPayload *yagpaxos.CondF
+
 	msgs   chan interface{}
 	active bool
 }
@@ -277,6 +279,7 @@ func (r *Replica) handle2A(msg *M2A, desc *commandDesc) {
 	desc.cmdSlot = msg.CmdSlot
 
 	if !r.AQ.Contains(r.Id) {
+		desc.afterPayload.Recall()
 		return
 	}
 
@@ -303,46 +306,44 @@ func (r *Replica) deliver(slot int, desc *commandDesc) {
 		return
 	}
 
-	if desc.cmdId.SeqNum == -1 {
-		return
-	}
+	desc.afterPayload.Call(func() {
+		if slot > 0 && !r.delivered.Has(strconv.Itoa(slot-1)) {
+			return
+		}
 
-	if slot > 0 && !r.delivered.Has(strconv.Itoa(slot-1)) {
-		return
-	}
+		p, exists := r.proposes.Get(desc.cmdId.String())
+		if exists {
+			desc.propose = p.(*genericsmr.Propose)
+		}
+		if desc.propose == nil {
+			go func() {
+				for desc.active {
+					time.Sleep(20 * time.Millisecond)
+					desc.msgs <- "deliver"
+				}
+			}()
+			return
+		}
 
-	p, exists := r.proposes.Get(desc.cmdId.String())
-	if exists {
-		desc.propose = p.(*genericsmr.Propose)
-	}
-	if desc.propose == nil {
-		go func() {
-			for desc.active {
-				time.Sleep(20 * time.Millisecond)
-				desc.msgs <- "deliver"
-			}
-		}()
-		return
-	}
+		r.delivered.Set(strconv.Itoa(slot), struct{}{})
+		desc.msgs <- slot
+		r.getCmdDesc(slot+1, "deliver")
 
-	r.delivered.Set(strconv.Itoa(slot), struct{}{})
-	desc.msgs <- slot
-	r.getCmdDesc(slot+1, "deliver")
+		dlog.Printf("Executing " + desc.cmd.String())
+		v := desc.cmd.Execute(r.State)
 
-	dlog.Printf("Executing " + desc.cmd.String())
-	v := desc.cmd.Execute(r.State)
+		if !desc.propose.Collocated || !r.Dreply {
+			return
+		}
 
-	if !desc.propose.Collocated || !r.Dreply {
-		return
-	}
-
-	rep := &genericsmrproto.ProposeReplyTS{
-		OK:        genericsmr.TRUE,
-		CommandId: desc.propose.CommandId,
-		Value:     v,
-		Timestamp: desc.propose.Timestamp,
-	}
-	r.ReplyProposeTS(rep, desc.propose.Reply, desc.propose.Mutex)
+		rep := &genericsmrproto.ProposeReplyTS{
+			OK:        genericsmr.TRUE,
+			CommandId: desc.propose.CommandId,
+			Value:     v,
+			Timestamp: desc.propose.Timestamp,
+		}
+		r.ReplyProposeTS(rep, desc.propose.Reply, desc.propose.Mutex)
+	})
 }
 
 func (r *Replica) handleDesc(desc *commandDesc, slot int) {
@@ -403,11 +404,15 @@ func (r *Replica) getCmdDesc(slot int, msg interface{}) *commandDesc {
 
 			desc := r.descPool.Get().(*commandDesc)
 			desc.cmdSlot = slot
-			desc.msgs = make(chan interface{}, 8)
+			desc.msgs = make(chan interface{}, 16)
 			desc.active = true
 			desc.phase = START
 			desc.propose = nil
 			desc.cmdId.SeqNum = -1
+
+			desc.afterPayload = yagpaxos.NewCondF(func() bool {
+				return desc.cmdId.SeqNum != -1
+			})
 
 			desc.twoBs = yagpaxos.NewMsgSet(r.AQ, func(msg interface{}) bool {
 				return true
@@ -428,7 +433,7 @@ func (r *Replica) getCmdDesc(slot int, msg interface{}) *commandDesc {
 func get2BsHandler(r *Replica, desc *commandDesc) yagpaxos.MsgSetHandler {
 	return func(leaderMsg interface{}, msgs []interface{}) {
 		desc.phase = COMMIT
-		desc.msgs <- "deliver"
+		r.deliver(desc.cmdSlot, desc)
 	}
 }
 

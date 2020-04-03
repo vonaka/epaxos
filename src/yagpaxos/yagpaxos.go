@@ -47,7 +47,7 @@ type commandDesc struct {
 	propose *genericsmr.Propose
 
 	fastAndSlowAcks *MsgSet
-	afterPropagate  *condF
+	afterPropagate  *CondF
 
 	msgs     chan interface{}
 	active   bool
@@ -310,13 +310,13 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 
 	if !r.AQ.Contains(r.Id) {
 		desc.phase = PAYLOAD_ONLY
-		desc.afterPropagate.recall()
+		desc.afterPropagate.Recall()
 		return
 	}
 
 	desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
 	desc.phase = PRE_ACCEPT
-	if desc.afterPropagate.recall() && desc.slowPath {
+	if desc.afterPropagate.Recall() && desc.slowPath {
 		// in this case a process already sent a MSlowAck
 		// message, hence, no need to sent MFastAck
 		return
@@ -343,7 +343,7 @@ func (r *Replica) handleFastAck(msg *MFastAck, desc *commandDesc) {
 
 func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 	if !r.AQ.Contains(r.Id) {
-		desc.afterPropagate.call(func() {
+		desc.afterPropagate.Call(func() {
 			if r.status == NORMAL && r.ballot == msg.Ballot {
 				desc.dep = msg.Dep
 			}
@@ -352,7 +352,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 		return
 	}
 
-	desc.afterPropagate.call(func() {
+	desc.afterPropagate.Call(func() {
 		if r.status != NORMAL || r.ballot != msg.Ballot {
 			return
 		}
@@ -574,7 +574,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			desc.defered = func() {}
 			desc.propose = nil
 
-			desc.afterPropagate = newCondF(func() bool {
+			desc.afterPropagate = NewCondF(func() bool {
 				return desc.propose != nil
 			})
 

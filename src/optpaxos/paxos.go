@@ -276,14 +276,6 @@ func (r *Replica) handle2A(msg *M2A, desc *commandDesc) {
 	desc.cmdId = msg.CmdId
 	desc.cmdSlot = msg.CmdSlot
 
-	if !r.isLeader {
-		defer func() {
-			// deliver a command which waits for
-			// a payload
-			desc.msgs <- "deliver"
-		}()
-	}
-
 	if !r.AQ.Contains(r.Id) {
 		return
 	}
@@ -371,12 +363,12 @@ func (r *Replica) handleDesc(desc *commandDesc, slot int) {
 				r.deliver(slot, desc)
 			}
 
-		case  int:
-			r.history[slot].cmdSlot = slot
-			r.history[slot].phase = desc.phase
-			r.history[slot].cmd = desc.cmd
+		case int:
+			r.history[msg].cmdSlot = msg
+			r.history[msg].phase = desc.phase
+			r.history[msg].cmd = desc.cmd
 			desc.active = false
-			r.cmdDescs.Remove(strconv.Itoa(slot))
+			r.cmdDescs.Remove(strconv.Itoa(msg))
 			r.descPool.Put(desc)
 			return
 		}
@@ -410,7 +402,7 @@ func (r *Replica) getCmdDesc(slot int, msg interface{}) *commandDesc {
 			}
 
 			desc := r.descPool.Get().(*commandDesc)
-			desc.cmdSlot = -1
+			desc.cmdSlot = slot
 			desc.msgs = make(chan interface{}, 8)
 			desc.active = true
 			desc.phase = START

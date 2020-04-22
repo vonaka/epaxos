@@ -31,6 +31,7 @@ var (
 	CollocatedWith = "NONE"
 	Latency        = time.Duration(0)
 	AddrLatency    = make(map[string]time.Duration)
+	ProxyAddrs     = make(map[string]struct{})
 )
 
 type RPCPair struct {
@@ -370,6 +371,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 
 	addr := strings.Split(conn.RemoteAddr().String(), ":")[0]
 	delay := r.getDelay(addr)
+	_, isProxy := ProxyAddrs[addr]
 
 	mutex := &sync.Mutex{}
 
@@ -402,7 +404,7 @@ func (r *Replica) clientListener(conn net.Conn) {
 					Propose:    propose,
 					Reply:      writer,
 					Mutex:      mutex,
-					Collocated: delay == 0,
+					Collocated: isProxy || (delay == 0 && len(ProxyAddrs) == 0),
 				})
 			}
 			break

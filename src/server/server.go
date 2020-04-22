@@ -48,7 +48,26 @@ var transitiveConflicts *bool = flag.Bool("transitiveconf", true, "Conflict rela
 var latency *string = flag.String("delay", "0", "Node latency (in ms).")
 var collocatedWith *string = flag.String("client", "NONE", "Client with which this server is collocated")
 var lfile *string = flag.String("lfile", "NONE", "Latency file.")
+var proxy = flag.String("proxy", "NONE", "List of proxy IPs for this server")
 var qfile *string = flag.String("qfile", "NONE", "Quorum config file (for yagpaxos only).")
+
+func initProxy(proxy string) {
+	if proxy == "NONE" {
+		return
+	}
+
+	f, err := os.Open(proxy)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer f.Close()
+
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		genericsmr.ProxyAddrs[s.Text()] = struct{}{}
+	}
+
+}
 
 func updateLatencies(filename string) {
 	if filename == "NONE" {
@@ -102,6 +121,7 @@ func main() {
 	flag.Parse()
 
 	updateLatencies(*lfile)
+	initProxy(*proxy)
 
 	runtime.GOMAXPROCS(*procs)
 

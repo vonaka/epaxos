@@ -249,7 +249,7 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 	bs := b[:4]
 
 	port := strings.Split(r.PeerAddrList[r.Id], ":")[1]
-	l, err := net.Listen("tcp", "0.0.0.0" + port)
+	l, err := net.Listen("tcp", "0.0.0.0:" + port)
 	if err != nil {
 		log.Fatal(r.PeerAddrList[r.Id], err)
 	}

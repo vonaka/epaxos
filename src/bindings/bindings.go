@@ -324,7 +324,7 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 
 		b.idLatency[i] = b.getDelay(addr)
 
-		if addr == b.collocatedWith || b.idLatency[i] == time.Duration(0) {
+		if addr == b.collocatedWith /*|| b.idLatency[i] == time.Duration(0)*/ {
 			found = true
 			b.collocatedId = i
 			b.closestReplica = i

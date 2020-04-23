@@ -248,7 +248,8 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 	var b [4]byte
 	bs := b[:4]
 
-	l, err := net.Listen("tcp", r.PeerAddrList[r.Id])
+	port := strings.Split(r.PeerAddrList[r.Id], ":")[1]
+	l, err := net.Listen("tcp", "0.0.0.0" + port)
 	if err != nil {
 		log.Fatal(r.PeerAddrList[r.Id], err)
 	}

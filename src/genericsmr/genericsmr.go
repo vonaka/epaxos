@@ -250,7 +250,7 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 
 	l, err := net.Listen("tcp", r.PeerAddrList[r.Id])
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal(r.PeerAddrList[r.Id], err)
 	}
 	r.Listener = l
 	for i := r.Id + 1; i < int32(r.N); i++ {

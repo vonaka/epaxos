@@ -137,7 +137,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 	r.cs.oneBRPC = r.RegisterRPC(new(M1B), r.cs.oneBChan)
 	r.cs.twoARPC = r.RegisterRPC(new(M2A), r.cs.twoAChan)
 	r.cs.twoBRPC = r.RegisterRPC(new(M2B), r.cs.twoBChan)
-	r.cs.syncRPC = r.RegisterRPC(new(MPaxosSync), r.cs.twoBChan)
+	r.cs.syncRPC = r.RegisterRPC(new(MPaxosSync), r.cs.syncChan)
 
 	yagpaxos.HookUser1(func() {
 		totalNum := 0

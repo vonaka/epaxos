@@ -34,6 +34,7 @@ type Replica struct {
 	cmdDescs    cmap.ConcurrentMap
 	delivered   cmap.ConcurrentMap
 	proposes    cmap.ConcurrentMap
+	slots       cmap.ConcurrentMap
 	history     []commandStaticDesc
 
 	AQ yagpaxos.Quorum
@@ -98,6 +99,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		cmdDescs:    cmap.New(),
 		delivered:   cmap.New(),
 		proposes:    cmap.New(),
+		slots:       cmap.New(),
 		history:     make([]commandStaticDesc, HISTORY_SIZE),
 
 		cs: communicationSupply{
@@ -232,6 +234,10 @@ func (r *Replica) run() {
 				cmdId.ClientId = propose.ClientId
 				cmdId.SeqNum = propose.CommandId
 				r.proposes.Set(cmdId.String(), propose)
+				slot, exists := r.slots.Get(cmdId.String())
+				if exists {
+					r.getCmdDesc(slot.(int), "deliver")
+				}
 			}
 
 		case m := <-r.cs.twoAChan:
@@ -278,6 +284,8 @@ func (r *Replica) handle2A(msg *M2A, desc *commandDesc) {
 	desc.cmdId = msg.CmdId
 	desc.cmdSlot = msg.CmdSlot
 
+	r.slots.Set(desc.cmdId.String(), desc.cmdSlot)
+
 	if !r.AQ.Contains(r.Id) {
 		desc.afterPayload.Recall()
 		return
@@ -302,11 +310,12 @@ func (r *Replica) handle2B(msg *M2B, desc *commandDesc) {
 }
 
 func (r *Replica) deliver(slot int, desc *commandDesc) {
-	if r.delivered.Has(strconv.Itoa(slot)) || desc.phase != COMMIT || !r.Exec {
-		return
-	}
-
 	desc.afterPayload.Call(func() {
+
+		if r.delivered.Has(strconv.Itoa(slot)) || desc.phase != COMMIT || !r.Exec {
+			return
+		}
+
 		if slot > 0 && !r.delivered.Has(strconv.Itoa(slot-1)) {
 			return
 		}
@@ -316,12 +325,6 @@ func (r *Replica) deliver(slot int, desc *commandDesc) {
 			desc.propose = p.(*genericsmr.Propose)
 		}
 		if desc.propose == nil {
-			go func() {
-				for desc.active {
-					time.Sleep(20 * time.Millisecond)
-					desc.msgs <- "deliver"
-				}
-			}()
 			return
 		}
 

@@ -56,8 +56,6 @@ type commandDesc struct {
 	successors  []*commandDesc
 	successorsL sync.Mutex
 
-	fastAckPoolWG sync.WaitGroup
-
 	// will be executed before sending
 	// NewLeaderAck message
 	defered func()
@@ -337,9 +335,12 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 	fastAck.Dep = desc.dep
 
 	go func() {
-		desc.fastAckPoolWG.Add(1)
+		fastAck := newFastAck()
+		fastAck.Replica = r.Id
+		fastAck.Ballot = r.ballot
+		fastAck.CmdId = cmdId
+		fastAck.Dep = desc.dep
 		r.sendToAll(fastAck, r.cs.fastAckRPC)
-		desc.fastAckPoolWG.Done()
 	}()
 	r.handleFastAck(fastAck, desc)
 }
@@ -557,8 +558,8 @@ func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 			r.history[msg].dep = desc.dep
 			r.history[msg].slowPath = desc.slowPath
 			r.history[msg].defered = desc.defered
-			desc.fastAndSlowAcks.Free()
 			desc.active = false
+			desc.fastAndSlowAcks.Free()
 			r.cmdDescs.Remove(cmdId.String())
 			r.descPool.Put(desc)
 			return
@@ -610,7 +611,6 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			freeFastAck := func(msg interface{}) {
 				switch msg.(type) {
 				case *MFastAck:
-					desc.fastAckPoolWG.Wait()
 					fastAckPool.Put(msg)
 				}
 			}

@@ -322,12 +322,17 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 		return
 	}
 
-	fastAck := &MFastAck{
+	/*fastAck := &MFastAck{
 		Replica: r.Id,
 		Ballot:  r.ballot,
 		CmdId:   cmdId,
 		Dep:     desc.dep,
-	}
+	}*/
+	fastAck := newFastAck()
+	fastAck.Replica = r.Id
+	fastAck.Ballot = r.ballot
+	fastAck.CmdId = cmdId
+	fastAck.Dep = desc.dep
 
 	go r.sendToAll(fastAck, r.cs.fastAckRPC)
 	r.handleFastAck(fastAck, desc)
@@ -435,12 +440,19 @@ func (r *Replica) handleSlowAck(msg *MSlowAck, desc *commandDesc) {
 }
 
 func (r *Replica) handleLightSlowAck(msg *MLightSlowAck, desc *commandDesc) {
-	r.commonCaseFastAck(&MFastAck{
+	/*r.commonCaseFastAck(&MFastAck{
 		Replica: msg.Replica,
 		Ballot:  msg.Ballot,
 		CmdId:   msg.CmdId,
 		Dep:     nil,
-	}, desc)
+	}, desc)*/
+	fastAck := newFastAck()
+	fastAck.Replica = msg.Replica
+	fastAck.Ballot = msg.Ballot
+	fastAck.CmdId = msg.CmdId
+	fastAck.Dep = nil
+
+	r.commonCaseFastAck(fastAck, desc)
 }
 
 func (r *Replica) handleNewLeader(msg *MNewLeader) {
@@ -539,6 +551,7 @@ func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 			r.history[msg].dep = desc.dep
 			r.history[msg].slowPath = desc.slowPath
 			r.history[msg].defered = desc.defered
+			desc.fastAndSlowAcks.Free()
 			desc.active = false
 			r.cmdDescs.Remove(cmdId.String())
 			r.descPool.Put(desc)
@@ -588,8 +601,15 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 					(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)
 			}
 
+			freeFastAck := func(msg interface{}) {
+				switch msg.(type) {
+				case *MFastAck:
+					fastAckPool.Put(msg)
+				}
+			}
+
 			desc.fastAndSlowAcks = NewMsgSet(r.AQ, acceptFastAndSlowAck,
-				getFastAndSlowAcksHandler(r, desc))
+				freeFastAck, getFastAndSlowAcksHandler(r, desc))
 
 			go r.handleDesc(desc, cmdId)
 

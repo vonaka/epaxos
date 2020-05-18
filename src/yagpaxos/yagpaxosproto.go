@@ -78,12 +78,36 @@ type MFlush struct {
 	Ballot  int32
 }
 
+var (
+	fastAckPool = sync.Pool{
+		New: func() interface{} {
+			return &MFastAck{}
+		},
+	}
+
+	/*slowAckPool = sync.Pool{
+		New: func() interface{} {
+			return &MSlowAck{}
+		},
+	}*/
+)
+
+func newFastAck() *MFastAck {
+	return fastAckPool.Get().(*MFastAck)
+}
+
+/*func newSlowAck() *MSlowAck {
+	return slowAckPool.Get().(*MSlowAck)
+}*/
+
 func (m *MFastAck) New() fastrpc.Serializable {
-	return new(MFastAck)
+	//return new(MFastAck)
+	return newFastAck()
 }
 
 func (m *MSlowAck) New() fastrpc.Serializable {
-	return new(MSlowAck)
+	//return new(MSlowAck)
+	return (*MSlowAck)(newFastAck())
 }
 
 func (m *MLightSlowAck) New() fastrpc.Serializable {

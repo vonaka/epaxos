@@ -7,17 +7,19 @@ type MsgSet struct {
 	msgs      []interface{}
 	leaderMsg interface{}
 	accept    func(interface{}) bool
+	freeMsg   func(interface{})
 	handler   MsgSetHandler
 }
 
-func NewMsgSet(q Quorum,
-	accept func(interface{}) bool, handler MsgSetHandler) *MsgSet {
+func NewMsgSet(q Quorum, accept func(interface{}) bool,
+	freeMsg func(interface{}), handler MsgSetHandler) *MsgSet {
 
 	return &MsgSet{
 		q:         q,
 		msgs:      []interface{}{},
 		leaderMsg: nil,
 		accept:    accept,
+		freeMsg:   freeMsg,
 		handler:   handler,
 	}
 }
@@ -36,6 +38,8 @@ func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
 		for _, fmsg := range ms.msgs {
 			if ms.accept(fmsg) {
 				newMsgs = append(newMsgs, fmsg)
+			} else {
+				ms.freeMsg(fmsg)
 			}
 		}
 		ms.msgs = newMsgs
@@ -43,6 +47,8 @@ func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
 	} else if ms.accept(msg) {
 		ms.msgs = append(ms.msgs, msg)
 		added = true
+	} else {
+		ms.freeMsg(msg)
 	}
 
 	if len(ms.msgs) == len(ms.q) ||
@@ -51,4 +57,15 @@ func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
 	}
 
 	return added
+}
+
+func (ms *MsgSet) Free() {
+	if ms.leaderMsg != nil {
+		ms.freeMsg(ms.leaderMsg)
+	}
+	for _, fmsg := range ms.msgs {
+		if fmsg != nil {
+			ms.freeMsg(fmsg)
+		}
+	}
 }

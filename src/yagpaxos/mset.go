@@ -24,6 +24,22 @@ func NewMsgSet(q Quorum, accept func(interface{}) bool,
 	}
 }
 
+func (ms *MsgSet) ReinitMsgSet(q Quorum, accept func(interface{}) bool,
+	freeMsg func(interface{}), handler MsgSetHandler) *MsgSet {
+
+	if ms == nil {
+		return NewMsgSet(q, accept, freeMsg, handler)
+	}
+
+	ms.q = q
+	ms.msgs = []interface{}{}
+	ms.leaderMsg = nil
+	ms.accept = accept
+	ms.freeMsg = freeMsg
+	ms.handler = handler
+	return ms
+}
+
 func (ms *MsgSet) Add(repId int32, isLeader bool, msg interface{}) bool {
 
 	if !ms.q.Contains(repId) {

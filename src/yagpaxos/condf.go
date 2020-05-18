@@ -14,6 +14,17 @@ func NewCondF(cond func() bool) *CondF {
 	}
 }
 
+func (cf *CondF) ReinitCondF(cond func() bool) *CondF {
+	if cf == nil {
+		return NewCondF(cond)
+	}
+
+	cf.cond = cond
+	cf.fun = func() {}
+	cf.wanna = false
+	return cf
+}
+
 func (cf *CondF) Call(f func()) bool {
 	if cf.cond() {
 		f()

@@ -539,7 +539,9 @@ func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 			r.handlePropose(msg, desc, cmdId)
 
 		case *MFastAck:
-			r.handleFastAck(msg, desc)
+			if msg.CmdId == cmdId {
+				r.handleFastAck(msg, desc)
+			}
 
 		case *MSlowAck:
 			r.handleSlowAck(msg, desc)
@@ -587,7 +589,9 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 
 			desc := r.descPool.Get().(*commandDesc)
 			desc.dep = nil
-			desc.msgs = make(chan interface{}, 8)
+			if desc.msgs == nil {
+				desc.msgs = make(chan interface{}, 8)
+			}
 			desc.active = true
 			desc.phase = START
 			desc.successors = nil
@@ -595,7 +599,10 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			desc.defered = func() {}
 			desc.propose = nil
 
-			desc.afterPropagate = NewCondF(func() bool {
+			/*desc.afterPropagate = NewCondF(func() bool {
+				return desc.propose != nil
+			})*/
+			desc.afterPropagate = desc.afterPropagate.ReinitCondF(func() bool {
 				return desc.propose != nil
 			})
 
@@ -616,8 +623,11 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 				}
 			}
 
-			desc.fastAndSlowAcks = NewMsgSet(r.AQ, acceptFastAndSlowAck,
-				freeFastAck, getFastAndSlowAcksHandler(r, desc))
+			//desc.fastAndSlowAcks = NewMsgSet(r.AQ, acceptFastAndSlowAck,
+			//	freeFastAck, getFastAndSlowAcksHandler(r, desc))
+			desc.fastAndSlowAcks = desc.fastAndSlowAcks.ReinitMsgSet(r.AQ,
+				acceptFastAndSlowAck, freeFastAck,
+				getFastAndSlowAcksHandler(r, desc))
 
 			go r.handleDesc(desc, cmdId)
 

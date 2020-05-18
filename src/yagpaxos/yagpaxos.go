@@ -341,6 +341,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 		fastAck.CmdId = cmdId
 		fastAck.Dep = desc.dep
 		r.sendToAll(fastAck, r.cs.fastAckRPC)
+		fastAckPool.Put(fastAck)
 	}()
 	r.handleFastAck(fastAck, desc)
 }

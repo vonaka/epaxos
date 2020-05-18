@@ -544,10 +544,14 @@ func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 			}
 
 		case *MSlowAck:
-			r.handleSlowAck(msg, desc)
+			if msg.CmdId == cmdId {
+				r.handleSlowAck(msg, desc)
+			}
 
 		case *MLightSlowAck:
-			r.handleLightSlowAck(msg, desc)
+			if msg.CmdId == cmdId {
+				r.handleLightSlowAck(msg, desc)
+			}
 
 		case string:
 			if msg == "deliver" {

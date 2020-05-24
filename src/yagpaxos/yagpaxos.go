@@ -28,6 +28,7 @@ type Replica struct {
 	cmdDescs  cmap.ConcurrentMap
 	delivered cmap.ConcurrentMap
 
+	sender  Sender
 	repchan *replyChan
 	history []commandStaticDesc
 	keys    map[state.Key]keyInfo
@@ -140,6 +141,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		},
 	}
 
+	r.sender = NewSender(r.Replica)
 	r.repchan = NewReplyChan(r)
 	r.qs = NewQuorumSet(r.N/2+1, r.N)
 
@@ -322,27 +324,16 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 		return
 	}
 
-	/*fastAck := &MFastAck{
-		Replica: r.Id,
-		Ballot:  r.ballot,
-		CmdId:   cmdId,
-		Dep:     desc.dep,
-	}*/
 	fastAck := newFastAck()
 	fastAck.Replica = r.Id
 	fastAck.Ballot = r.ballot
 	fastAck.CmdId = cmdId
 	fastAck.Dep = desc.dep
 
-	go func() {
-		fastAck := newFastAck()
-		fastAck.Replica = r.Id
-		fastAck.Ballot = r.ballot
-		fastAck.CmdId = cmdId
-		fastAck.Dep = desc.dep
-		r.sendToAll(fastAck, r.cs.fastAckRPC)
-		fastAckPool.Put(fastAck)
-	}()
+	fastAckSend := copyFastAck(fastAck)
+	r.sender.SendToAll(fastAckSend, r.cs.fastAckRPC)
+	fastAckPool.Put(fastAckSend)
+
 	r.handleFastAck(fastAck, desc)
 }
 
@@ -404,7 +395,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 				CmdId:   msg.CmdId,
 			}
 
-			go r.sendToAll(lightSlowAck, r.cs.lightSlowAckRPC)
+			r.sender.SendToAll(lightSlowAck, r.cs.lightSlowAckRPC)
 			r.handleLightSlowAck(lightSlowAck, desc)
 		}
 	})
@@ -448,18 +439,11 @@ func (r *Replica) handleSlowAck(msg *MSlowAck, desc *commandDesc) {
 }
 
 func (r *Replica) handleLightSlowAck(msg *MLightSlowAck, desc *commandDesc) {
-	/*r.commonCaseFastAck(&MFastAck{
-		Replica: msg.Replica,
-		Ballot:  msg.Ballot,
-		CmdId:   msg.CmdId,
-		Dep:     nil,
-	}, desc)*/
 	fastAck := newFastAck()
 	fastAck.Replica = msg.Replica
 	fastAck.Ballot = msg.Ballot
 	fastAck.CmdId = msg.CmdId
 	fastAck.Dep = nil
-
 	r.commonCaseFastAck(fastAck, desc)
 }
 
@@ -667,46 +651,4 @@ func (r *Replica) getDepAndUpdateInfo(cmd state.Command, cmdId CommandId) Dep {
 	}
 
 	return dep
-}
-
-func (r *Replica) sendToAll(msg fastrpc.Serializable, rpc uint8) {
-	for p := int32(0); p < int32(r.N); p++ {
-		r.M.Lock()
-		if r.Alive[p] {
-			r.M.Unlock()
-			r.SendMsg(p, rpc, msg)
-			r.M.Lock()
-		}
-		r.M.Unlock()
-	}
-}
-
-func (r *Replica) sendTo(q Quorum, msg fastrpc.Serializable, rpc uint8) {
-	for p := int32(0); p < int32(r.N); p++ {
-		if !q.Contains(p) {
-			continue
-		}
-		r.M.Lock()
-		if r.Alive[p] {
-			r.M.Unlock()
-			r.SendMsg(p, rpc, msg)
-			r.M.Lock()
-		}
-		r.M.Unlock()
-	}
-}
-
-func (r *Replica) sendExcept(q Quorum, msg fastrpc.Serializable, rpc uint8) {
-	for p := int32(0); p < int32(r.N); p++ {
-		if q.Contains(p) {
-			continue
-		}
-		r.M.Lock()
-		if r.Alive[p] {
-			r.M.Unlock()
-			r.SendMsg(p, rpc, msg)
-			r.M.Lock()
-		}
-		r.M.Unlock()
-	}
 }

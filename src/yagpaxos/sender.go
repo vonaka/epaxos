@@ -19,6 +19,7 @@ type SendArg struct {
 	rpc      uint8
 	quorum   Quorum
 	sendType int32
+	free     func()
 }
 
 type Sender chan SendArg
@@ -38,36 +39,57 @@ func NewSender(r *genericsmr.Replica) Sender {
 				sendExcept(r, arg.quorum, arg.msg, arg.rpc)
 			case SEND_SINGLE:
 			}
+			if arg.free != nil {
+				arg.free()
+			}
 		}
 	}()
 
 	return s
 }
 
-func (s Sender) SendToAll(msg fastrpc.Serializable, rpc uint8) {
+func (s Sender) SendToAllAndFree(msg fastrpc.Serializable,
+	rpc uint8, free func()) {
 	s <- SendArg{
 		msg:      msg,
 		rpc:      rpc,
 		sendType: SEND_ALL,
+		free:     free,
 	}
 }
 
-func (s Sender) SendToQuorum(q Quorum, msg fastrpc.Serializable, rpc uint8) {
+func (s Sender) SendToQuorumAndFree(q Quorum,
+	msg fastrpc.Serializable, rpc uint8, free func()) {
 	s <- SendArg{
 		msg:      msg,
 		rpc:      rpc,
 		quorum:   q,
 		sendType: SEND_QUORUM,
+		free:     free,
 	}
 }
 
-func (s Sender) SendExcept(q Quorum, msg fastrpc.Serializable, rpc uint8) {
+func (s Sender) SendExceptAndFree(q Quorum,
+	msg fastrpc.Serializable, rpc uint8, free func()) {
 	s <- SendArg{
 		msg:      msg,
 		rpc:      rpc,
 		quorum:   q,
 		sendType: SEND_EXCEPT,
+		free:     free,
 	}
+}
+
+func (s Sender) SendToAll(msg fastrpc.Serializable, rpc uint8) {
+	s.SendToAllAndFree(msg, rpc, nil)
+}
+
+func (s Sender) SendToQuorum(q Quorum, msg fastrpc.Serializable, rpc uint8) {
+	s.SendToQuorumAndFree(q, msg, rpc, nil)
+}
+
+func (s Sender) SendExcept(q Quorum, msg fastrpc.Serializable, rpc uint8) {
+	s.SendExceptAndFree(q, msg, rpc, nil)
 }
 
 func sendToAll(r *genericsmr.Replica, msg fastrpc.Serializable, rpc uint8) {

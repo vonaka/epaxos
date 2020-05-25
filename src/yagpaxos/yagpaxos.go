@@ -331,8 +331,9 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 	fastAck.Dep = desc.dep
 
 	fastAckSend := copyFastAck(fastAck)
-	r.sender.SendToAll(fastAckSend, r.cs.fastAckRPC)
-	fastAckPool.Put(fastAckSend)
+	r.sender.SendToAllAndFree(fastAckSend, r.cs.fastAckRPC, func() {
+		fastAckPool.Put(fastAckSend)
+	})
 
 	r.handleFastAck(fastAck, desc)
 }

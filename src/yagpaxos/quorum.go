@@ -1,10 +1,20 @@
 package yagpaxos
 
+import (
+	"bufio"
+	"errors"
+	"genericsmr"
+	"os"
+	"strings"
+)
+
 type Quorum map[int32]struct{}
 
 type QuorumsOfLeader map[int32]Quorum
 
 type QuorumSet map[int32]QuorumsOfLeader
+
+var NO_QUORUM_FILE = errors.New("Quorum file is not provided")
 
 func NewQuorum(size int) Quorum {
 	return make(map[int32]struct{}, size)
@@ -18,6 +28,50 @@ func NewQuorumOfAll(size int) Quorum {
 	}
 
 	return q
+}
+
+func NewQuorumFromFile(qfile string, r *genericsmr.Replica) (Quorum, int32, error) {
+	if qfile == "" {
+		return Quorum{}, 0, NO_QUORUM_FILE
+	}
+
+	f, err := os.Open(qfile)
+	if err != nil {
+		return Quorum{}, 0, err
+	}
+	defer f.Close()
+
+	leader := int32(0)
+	AQ := NewQuorum(r.N/2 + 1)
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		id := r.Id
+		isLeader := false
+		addr := ""
+
+		data := strings.Split(s.Text(), " ")
+		if len(data) == 1 {
+			addr = data[0]
+		} else {
+			isLeader = true
+			addr = data[1]
+		}
+
+		for rid := int32(0); rid < int32(r.N); rid++ {
+			paddr := strings.Split(r.PeerAddrList[rid], ":")[0]
+			if addr == paddr {
+				id = rid
+				break
+			}
+		}
+
+		AQ[id] = struct{}{}
+		if isLeader {
+			leader = id
+		}
+	}
+
+	return AQ, leader, s.Err()
 }
 
 func (q Quorum) Contains(repId int32) bool {

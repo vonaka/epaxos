@@ -1,15 +1,12 @@
 package yagpaxos
 
 import (
-	"bufio"
 	"dlog"
 	"fastrpc"
 	"fmt"
 	"genericsmr"
 	"log"
-	"os"
 	"state"
-	"strings"
 	"sync"
 	"time"
 
@@ -145,10 +142,15 @@ func NewReplica(replicaId int, peerAddrs []string,
 	r.repchan = NewReplyChan(r)
 	r.qs = NewQuorumSet(r.N/2+1, r.N)
 
-	if qfile == "NONE" {
+	AQ, leaderId, err := NewQuorumFromFile(qfile, r.Replica)
+	if err == nil {
+		r.AQ = AQ
+		r.ballot = leaderId
+		r.cballot = leaderId
+	} else if err == NO_QUORUM_FILE {
 		r.AQ = r.qs.AQ(r.ballot)
 	} else {
-		r.initQuorumAndLeader(qfile)
+		log.Fatal(err)
 	}
 
 	r.cs.fastAckRPC =
@@ -190,51 +192,6 @@ func NewReplica(replicaId int, peerAddrs []string,
 	go r.run()
 
 	return r
-}
-
-func (r *Replica) initQuorumAndLeader(qfile string) {
-	f, err := os.Open(qfile)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
-	AQ := NewQuorum(r.N/2 + 1)
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		id := r.Id
-		isLeader := false
-		addr := ""
-
-		data := strings.Split(s.Text(), " ")
-		if len(data) == 1 {
-			addr = data[0]
-		} else {
-			isLeader = true
-			addr = data[1]
-		}
-
-		for rid := int32(0); rid < int32(r.N); rid++ {
-			paddr := strings.Split(r.PeerAddrList[rid], ":")[0]
-			if addr == paddr {
-				id = rid
-				break
-			}
-		}
-
-		AQ[id] = struct{}{}
-		if isLeader {
-			r.ballot = id
-			r.cballot = id
-		}
-	}
-
-	r.AQ = AQ
-
-	err = s.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
 }
 
 func (r *Replica) run() {
@@ -588,9 +545,6 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			desc.defered = func() {}
 			desc.propose = nil
 
-			/*desc.afterPropagate = NewCondF(func() bool {
-				return desc.propose != nil
-			})*/
 			desc.afterPropagate = desc.afterPropagate.ReinitCondF(func() bool {
 				return desc.propose != nil
 			})
@@ -612,8 +566,6 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 				}
 			}
 
-			//desc.fastAndSlowAcks = NewMsgSet(r.AQ, acceptFastAndSlowAck,
-			//	freeFastAck, getFastAndSlowAcksHandler(r, desc))
 			desc.fastAndSlowAcks = desc.fastAndSlowAcks.ReinitMsgSet(r.AQ,
 				acceptFastAndSlowAck, freeFastAck,
 				getFastAndSlowAcksHandler(r, desc))

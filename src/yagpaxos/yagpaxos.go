@@ -13,8 +13,6 @@ import (
 	"github.com/orcaman/concurrent-map"
 )
 
-const HISTORY_SIZE = 10010001
-
 type Replica struct {
 	*genericsmr.Replica
 
@@ -23,6 +21,7 @@ type Replica struct {
 	status  int
 
 	cmdDescs  cmap.ConcurrentMap
+	cmdEnum   cmap.ConcurrentMap
 	delivered cmap.ConcurrentMap
 
 	sender  Sender
@@ -35,7 +34,8 @@ type Replica struct {
 	qs QuorumSet
 	cs CommunicationSupply
 
-	descPool sync.Pool
+	descPool     sync.Pool
+	routineCount int
 }
 
 type commandDesc struct {
@@ -66,6 +66,11 @@ type commandStaticDesc struct {
 	dep      Dep
 	slowPath bool
 	defered  func()
+}
+
+type commandItem struct {
+	cmdId CommandId
+	desc  *commandDesc
 }
 
 type CommunicationSupply struct {
@@ -104,6 +109,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 		status:  NORMAL,
 
 		cmdDescs:  cmap.New(),
+		cmdEnum:   cmap.New(),
 		delivered: cmap.New(),
 		history:   make([]commandStaticDesc, HISTORY_SIZE),
 		keys:      make(map[state.Key]keyInfo),
@@ -130,6 +136,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 			collectChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 		},
+
+		routineCount: 0,
 
 		descPool: sync.Pool{
 			New: func() interface{} {
@@ -205,9 +213,9 @@ func (r *Replica) run() {
 	}
 
 	go r.WaitForClientConnections()
+	go r.handleCmdEnum()
 
 	var cmdId CommandId
-
 	for !r.Shutdown {
 		select {
 		case propose := <-r.ProposeChan:
@@ -432,6 +440,7 @@ func (r *Replica) handleCollect(msg *MCollect) {
 func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 	// TODO: what if desc.propose is nil ?
 	//       is that possible ?
+	//       Don't think so
 
 	if r.delivered.Has(cmdId.String()) || desc.phase != COMMIT || !r.Exec {
 		return
@@ -473,47 +482,108 @@ func (r *Replica) leader() int32 {
 	return leader(r.ballot, r.N)
 }
 
+func (r *Replica) handleCmdEnum() {
+	for !r.Shutdown {
+		for item := range r.cmdEnum.IterBuffered() {
+			cmdItem := item.Val.(*commandItem)
+			r.handleMsg(cmdItem.desc, cmdItem.cmdId)
+		}
+	}
+}
+
+func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId) bool {
+	switch msg := (<-desc.msgs).(type) {
+
+	case *genericsmr.Propose:
+		r.handlePropose(msg, desc, cmdId)
+
+	case *MFastAck:
+		if msg.CmdId == cmdId {
+			r.handleFastAck(msg, desc)
+		}
+
+	case *MSlowAck:
+		if msg.CmdId == cmdId {
+			r.handleSlowAck(msg, desc)
+		}
+
+	case *MLightSlowAck:
+		if msg.CmdId == cmdId {
+			r.handleLightSlowAck(msg, desc)
+		}
+
+	case string:
+		if msg == "deliver" {
+			r.deliver(cmdId, desc)
+		}
+
+	case int:
+		r.history[msg].cmdId = cmdId
+		r.history[msg].phase = desc.phase
+		r.history[msg].cmd = desc.cmd
+		r.history[msg].dep = desc.dep
+		r.history[msg].slowPath = desc.slowPath
+		r.history[msg].defered = desc.defered
+		desc.active = false
+		desc.fastAndSlowAcks.Free()
+		key := cmdId.String()
+		r.cmdDescs.Remove(key)
+		r.cmdEnum.Remove(key)
+		r.descPool.Put(desc)
+		return true
+	}
+
+	return false
+}
+
 func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 	for desc.active {
-		switch msg := (<-desc.msgs).(type) {
-
-		case *genericsmr.Propose:
-			r.handlePropose(msg, desc, cmdId)
-
-		case *MFastAck:
-			if msg.CmdId == cmdId {
-				r.handleFastAck(msg, desc)
-			}
-
-		case *MSlowAck:
-			if msg.CmdId == cmdId {
-				r.handleSlowAck(msg, desc)
-			}
-
-		case *MLightSlowAck:
-			if msg.CmdId == cmdId {
-				r.handleLightSlowAck(msg, desc)
-			}
-
-		case string:
-			if msg == "deliver" {
-				r.deliver(cmdId, desc)
-			}
-
-		case int:
-			r.history[msg].cmdId = cmdId
-			r.history[msg].phase = desc.phase
-			r.history[msg].cmd = desc.cmd
-			r.history[msg].dep = desc.dep
-			r.history[msg].slowPath = desc.slowPath
-			r.history[msg].defered = desc.defered
-			desc.active = false
-			desc.fastAndSlowAcks.Free()
-			r.cmdDescs.Remove(cmdId.String())
-			r.descPool.Put(desc)
+		if r.handleMsg(desc, cmdId) {
+			r.routineCount--
 			return
 		}
 	}
+}
+
+func (r *Replica) newDesc() *commandDesc {
+	desc := r.descPool.Get().(*commandDesc)
+	desc.dep = nil
+	if desc.msgs == nil {
+		desc.msgs = make(chan interface{}, 8)
+	}
+	desc.active = true
+	desc.phase = START
+	desc.successors = nil
+	desc.slowPath = false
+	desc.defered = func() {}
+	desc.propose = nil
+
+	desc.afterPropagate = desc.afterPropagate.ReinitCondF(func() bool {
+		return desc.propose != nil
+	})
+
+	acceptFastAndSlowAck := func(msg interface{}) bool {
+		if desc.fastAndSlowAcks.leaderMsg == nil {
+			return true
+		}
+		leaderFastAck := desc.fastAndSlowAcks.leaderMsg.(*MFastAck)
+		fastAck := msg.(*MFastAck)
+		return fastAck.Dep == nil ||
+			(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)
+	}
+
+	freeFastAck := func(msg interface{}) {
+		switch msg.(type) {
+		case *MFastAck:
+			fastAckPool.Put(msg)
+		}
+	}
+
+	desc.fastAndSlowAcks = desc.fastAndSlowAcks.ReinitMsgSet(r.AQ,
+		acceptFastAndSlowAck, freeFastAck,
+		getFastAndSlowAcksHandler(r, desc))
+
+	return desc
 }
 
 func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
@@ -522,7 +592,36 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 		return nil
 	}
 
-	res := r.cmdDescs.Upsert(cmdId.String(), nil,
+	key := cmdId.String()
+
+	val, exists := r.cmdEnum.Get(key)
+	if exists {
+		item := val.(*commandItem)
+		if msg != nil {
+			item.desc.msgs <- msg
+		}
+		return item.desc
+	} else if r.routineCount >= MAX_DESC_ROUTINES {
+		var item *commandItem
+		r.cmdEnum.Upsert(key, nil,
+			func(exists bool, mapV, _ interface{}) interface{} {
+				if exists {
+					item = mapV.(*commandItem)
+				} else  {
+					item = &commandItem{
+						cmdId: cmdId,
+						desc:  r.newDesc(),
+					}
+				}
+				return item
+			})
+		if msg != nil {
+			item.desc.msgs <- msg
+		}
+		return item.desc
+	}
+
+	res := r.cmdDescs.Upsert(key, nil,
 		func(exists bool, mapV, _ interface{}) interface{} {
 			if exists {
 				desc := mapV.(*commandDesc)
@@ -533,44 +632,9 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 				return desc
 			}
 
-			desc := r.descPool.Get().(*commandDesc)
-			desc.dep = nil
-			if desc.msgs == nil {
-				desc.msgs = make(chan interface{}, 8)
-			}
-			desc.active = true
-			desc.phase = START
-			desc.successors = nil
-			desc.slowPath = false
-			desc.defered = func() {}
-			desc.propose = nil
-
-			desc.afterPropagate = desc.afterPropagate.ReinitCondF(func() bool {
-				return desc.propose != nil
-			})
-
-			acceptFastAndSlowAck := func(msg interface{}) bool {
-				if desc.fastAndSlowAcks.leaderMsg == nil {
-					return true
-				}
-				leaderFastAck := desc.fastAndSlowAcks.leaderMsg.(*MFastAck)
-				fastAck := msg.(*MFastAck)
-				return fastAck.Dep == nil ||
-					(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)
-			}
-
-			freeFastAck := func(msg interface{}) {
-				switch msg.(type) {
-				case *MFastAck:
-					fastAckPool.Put(msg)
-				}
-			}
-
-			desc.fastAndSlowAcks = desc.fastAndSlowAcks.ReinitMsgSet(r.AQ,
-				acceptFastAndSlowAck, freeFastAck,
-				getFastAndSlowAcksHandler(r, desc))
-
+			desc := r.newDesc()
 			go r.handleDesc(desc, cmdId)
+			r.routineCount++
 
 			if msg != nil {
 				desc.msgs <- msg

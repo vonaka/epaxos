@@ -50,6 +50,7 @@ var collocatedWith *string = flag.String("client", "NONE", "Client with which th
 var lfile *string = flag.String("lfile", "NONE", "Latency file.")
 var proxy = flag.String("proxy", "NONE", "List of proxy IPs for this server")
 var qfile *string = flag.String("qfile", "", "Quorum config file (for yagpaxos only).")
+var descNum *int = flag.Int("desc", 100, "Number of command descriptors (only for yagpaxos and optpaxos).")
 
 func initProxy(proxy string) {
 	if proxy == "NONE" {
@@ -168,11 +169,13 @@ func main() {
 		rpc.Register(rep)
 	} else if *doYagpaxos {
 		log.Println("Starting Yet Another Generalized Paxos replica...")
+		yagpaxos.MaxDescRoutines = *descNum
 		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
 			*lread, *dreply, *maxfailures, *qfile)
 		rpc.Register(rep)
 	} else if *doOptpaxos {
 		log.Println("Starting optimized Paxos replica...")
+		yagpaxos.MaxDescRoutines = *descNum
 		rep := optpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
 			*lread, *dreply, *maxfailures, *qfile)
 		rpc.Register(rep)

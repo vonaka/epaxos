@@ -601,7 +601,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			item.desc.msgs <- msg
 		}
 		return item.desc
-	} else if r.routineCount >= MAX_DESC_ROUTINES {
+	} else if r.routineCount >= MaxDescRoutines {
 		var item *commandItem
 		r.cmdEnum.Upsert(key, nil,
 			func(exists bool, mapV, _ interface{}) interface{} {

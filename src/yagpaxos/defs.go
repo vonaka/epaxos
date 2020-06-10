@@ -21,10 +21,9 @@ const (
 	COMMIT
 )
 
-const (
-	HISTORY_SIZE      = 10010001
-	MAX_DESC_ROUTINES = 100
-)
+const HISTORY_SIZE = 10010001
+
+var MaxDescRoutines = 100
 
 type CommandId struct {
 	ClientId int32

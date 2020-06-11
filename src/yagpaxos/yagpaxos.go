@@ -486,59 +486,72 @@ func (r *Replica) handleCmdEnum() {
 	for !r.Shutdown {
 		for item := range r.cmdEnum.IterBuffered() {
 			cmdItem := item.Val.(*commandItem)
-			r.handleMsg(cmdItem.desc, cmdItem.cmdId)
+			r.handleMsg(cmdItem.desc, cmdItem.cmdId, false)
 		}
 	}
 }
 
-func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId) bool {
-	switch msg := (<-desc.msgs).(type) {
+func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, block bool) bool {
+	readMsg := func(m interface{}) bool {
+		switch msg := m.(type) {
 
-	case *genericsmr.Propose:
-		r.handlePropose(msg, desc, cmdId)
+		case *genericsmr.Propose:
+			r.handlePropose(msg, desc, cmdId)
 
-	case *MFastAck:
-		if msg.CmdId == cmdId {
-			r.handleFastAck(msg, desc)
+		case *MFastAck:
+			if msg.CmdId == cmdId {
+				r.handleFastAck(msg, desc)
+			}
+
+		case *MSlowAck:
+			if msg.CmdId == cmdId {
+				r.handleSlowAck(msg, desc)
+			}
+
+		case *MLightSlowAck:
+			if msg.CmdId == cmdId {
+				r.handleLightSlowAck(msg, desc)
+			}
+
+		case string:
+			if msg == "deliver" {
+				r.deliver(cmdId, desc)
+			}
+
+		case int:
+			r.history[msg].cmdId = cmdId
+			r.history[msg].phase = desc.phase
+			r.history[msg].cmd = desc.cmd
+			r.history[msg].dep = desc.dep
+			r.history[msg].slowPath = desc.slowPath
+			r.history[msg].defered = desc.defered
+			desc.active = false
+			desc.fastAndSlowAcks.Free()
+			key := cmdId.String()
+			r.cmdDescs.Remove(key)
+			r.cmdEnum.Remove(key)
+			r.descPool.Put(desc)
+			return true
 		}
 
-	case *MSlowAck:
-		if msg.CmdId == cmdId {
-			r.handleSlowAck(msg, desc)
-		}
-
-	case *MLightSlowAck:
-		if msg.CmdId == cmdId {
-			r.handleLightSlowAck(msg, desc)
-		}
-
-	case string:
-		if msg == "deliver" {
-			r.deliver(cmdId, desc)
-		}
-
-	case int:
-		r.history[msg].cmdId = cmdId
-		r.history[msg].phase = desc.phase
-		r.history[msg].cmd = desc.cmd
-		r.history[msg].dep = desc.dep
-		r.history[msg].slowPath = desc.slowPath
-		r.history[msg].defered = desc.defered
-		desc.active = false
-		desc.fastAndSlowAcks.Free()
-		key := cmdId.String()
-		r.cmdDescs.Remove(key)
-		r.cmdEnum.Remove(key)
-		r.descPool.Put(desc)
-		return true
+		return false
 	}
 
-	return false
+	if block {
+		return readMsg(<-desc.msgs)
+	}
+
+	select {
+	case msg := <-desc.msgs:
+		return readMsg(msg)
+	default:
+		return false
+	}
 }
 
 func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 	for desc.active {
-		if r.handleMsg(desc, cmdId) {
+		if r.handleMsg(desc, cmdId, true) {
 			r.routineCount--
 			return
 		}
@@ -607,7 +620,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			func(exists bool, mapV, _ interface{}) interface{} {
 				if exists {
 					item = mapV.(*commandItem)
-				} else  {
+				} else {
 					item = &commandItem{
 						cmdId: cmdId,
 						desc:  r.newDesc(),

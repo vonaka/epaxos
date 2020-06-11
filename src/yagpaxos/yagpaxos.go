@@ -611,7 +611,10 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 	if exists {
 		item := val.(*commandItem)
 		if msg != nil {
-			item.desc.msgs <- msg
+			go func() {
+				// TODO: try non-blocking write instead of goroutines
+				item.desc.msgs <- msg
+			}()
 		}
 		return item.desc
 	} else if r.routineCount >= MaxDescRoutines {
@@ -629,7 +632,10 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 				return item
 			})
 		if msg != nil {
-			item.desc.msgs <- msg
+			go func() {
+				// TODO: non-blocking write
+				item.desc.msgs <- msg
+			}()
 		}
 		return item.desc
 	}

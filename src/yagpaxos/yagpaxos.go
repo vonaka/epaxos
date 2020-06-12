@@ -71,6 +71,7 @@ type commandStaticDesc struct {
 type commandItem struct {
 	cmdId CommandId
 	desc  *commandDesc
+	dep   Dep
 }
 
 type CommunicationSupply struct {
@@ -221,22 +222,23 @@ func (r *Replica) run() {
 		case propose := <-r.ProposeChan:
 			cmdId.ClientId = propose.ClientId
 			cmdId.SeqNum = propose.CommandId
-			desc := r.getCmdDesc(cmdId, propose)
+			dep := r.getDepAndUpdateInfo(propose.Command, cmdId)
+			desc := r.getCmdDesc(cmdId, propose, dep)
 			if desc == nil {
 				log.Fatal("Got propose for the delivered command:", cmdId)
 			}
 
 		case m := <-r.cs.fastAckChan:
 			fastAck := m.(*MFastAck)
-			r.getCmdDesc(fastAck.CmdId, fastAck)
+			r.getCmdDesc(fastAck.CmdId, fastAck, nil)
 
 		case m := <-r.cs.slowAckChan:
 			slowAck := m.(*MSlowAck)
-			r.getCmdDesc(slowAck.CmdId, slowAck)
+			r.getCmdDesc(slowAck.CmdId, slowAck, nil)
 
 		case m := <-r.cs.lightSlowAckChan:
 			lightSlowAck := m.(*MLightSlowAck)
-			r.getCmdDesc(lightSlowAck.CmdId, lightSlowAck)
+			r.getCmdDesc(lightSlowAck.CmdId, lightSlowAck, nil)
 
 		case m := <-r.cs.newLeaderChan:
 			newLeader := m.(*MNewLeader)
@@ -266,7 +268,7 @@ func (r *Replica) run() {
 }
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose,
-	desc *commandDesc, cmdId CommandId) {
+	desc *commandDesc, cmdId CommandId, dep Dep) {
 
 	if r.status != NORMAL || desc.phase != START || desc.propose != nil {
 		return
@@ -281,7 +283,8 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 		return
 	}
 
-	desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
+	//desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
+	desc.dep = dep
 	desc.phase = PRE_ACCEPT
 	if desc.afterPropagate.Recall() && desc.slowPath {
 		// in this case a process already sent a MSlowAck
@@ -344,7 +347,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 					if r.delivered.Has(cmdId.String()) {
 						continue
 					}
-					descPrime := r.getCmdDesc(cmdId, nil)
+					descPrime := r.getCmdDesc(cmdId, nil, nil)
 					if descPrime.phase == PRE_ACCEPT {
 						descPrime.phase = PAYLOAD_ONLY
 					}
@@ -387,7 +390,7 @@ func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
 		desc.phase = COMMIT
 
 		for _, depCmdId := range desc.dep {
-			depDesc := r.getCmdDesc(depCmdId, nil)
+			depDesc := r.getCmdDesc(depCmdId, nil, nil)
 			if depDesc == nil {
 				continue
 			}
@@ -486,17 +489,17 @@ func (r *Replica) handleCmdEnum() {
 	for !r.Shutdown {
 		for item := range r.cmdEnum.IterBuffered() {
 			cmdItem := item.Val.(*commandItem)
-			r.handleMsg(cmdItem.desc, cmdItem.cmdId, false)
+			r.handleMsg(cmdItem.desc, cmdItem.cmdId, cmdItem.dep, false)
 		}
 	}
 }
 
-func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, block bool) bool {
+func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, dep Dep, block bool) bool {
 	readMsg := func(m interface{}) bool {
 		switch msg := m.(type) {
 
 		case *genericsmr.Propose:
-			r.handlePropose(msg, desc, cmdId)
+			r.handlePropose(msg, desc, cmdId, dep)
 
 		case *MFastAck:
 			if msg.CmdId == cmdId {
@@ -549,9 +552,9 @@ func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, block bool) bool
 	}
 }
 
-func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
+func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId, dep Dep) {
 	for desc.active {
-		if r.handleMsg(desc, cmdId, true) {
+		if r.handleMsg(desc, cmdId, dep, true) {
 			r.routineCount--
 			return
 		}
@@ -599,7 +602,7 @@ func (r *Replica) newDesc() *commandDesc {
 	return desc
 }
 
-func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
+func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *commandDesc {
 
 	if r.delivered.Has(cmdId.String()) {
 		return nil
@@ -664,6 +667,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 							item = &commandItem{
 								cmdId: cmdId,
 								desc:  desc,
+								dep:   dep,
 							}
 						}
 						return item
@@ -677,7 +681,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 				return item.desc
 			}
 
-			go r.handleDesc(desc, cmdId)
+			go r.handleDesc(desc, cmdId, dep)
 			r.routineCount++
 
 			if msg != nil {
@@ -691,8 +695,8 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 }
 
 func (r *Replica) getDepAndUpdateInfo(cmd state.Command, cmdId CommandId) Dep {
-	r.keysL.Lock()
-	defer r.keysL.Unlock()
+	//r.keysL.Lock()
+	//defer r.keysL.Unlock()
 
 	dep := []CommandId{}
 	keysOfCmd := keysOf(cmd)

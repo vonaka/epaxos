@@ -528,8 +528,8 @@ func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, block bool) bool
 			desc.active = false
 			desc.fastAndSlowAcks.Free()
 			key := cmdId.String()
-			r.cmdDescs.Remove(key)
 			r.cmdEnum.Remove(key)
+			r.cmdDescs.Remove(key)
 			r.descPool.Put(desc)
 			return true
 		}
@@ -607,7 +607,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 
 	key := cmdId.String()
 
-	val, exists := r.cmdEnum.Get(key)
+	/*val, exists := r.cmdEnum.Get(key)
 	if exists {
 		item := val.(*commandItem)
 		if msg != nil {
@@ -638,20 +638,45 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}) *commandDesc {
 			}()
 		}
 		return item.desc
-	}
+	}*/
 
 	res := r.cmdDescs.Upsert(key, nil,
 		func(exists bool, mapV, _ interface{}) interface{} {
 			if exists {
 				desc := mapV.(*commandDesc)
 				if msg != nil {
-					desc.msgs <- msg
+					go func() {
+						desc.msgs <- msg
+					}()
 				}
 
 				return desc
 			}
 
 			desc := r.newDesc()
+			if r.routineCount >= MaxDescRoutines {
+				var item *commandItem
+				r.cmdEnum.Upsert(key, nil,
+					func(exists bool, mapV, _ interface{}) interface{} {
+						if exists {
+							item = mapV.(*commandItem)
+						} else {
+							item = &commandItem{
+								cmdId: cmdId,
+								desc:  desc,
+							}
+						}
+						return item
+					})
+				if msg != nil {
+					go func() {
+						// TODO: non-blocking write
+						item.desc.msgs <- msg
+					}()
+				}
+				return item.desc
+			}
+
 			go r.handleDesc(desc, cmdId)
 			r.routineCount++
 

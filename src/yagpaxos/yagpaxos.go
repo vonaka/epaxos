@@ -43,6 +43,7 @@ type commandDesc struct {
 	cmd     state.Command
 	dep     Dep
 	propose *genericsmr.Propose
+	proposeDep Dep
 
 	fastAndSlowAcks *MsgSet
 	afterPropagate  *CondF
@@ -222,7 +223,12 @@ func (r *Replica) run() {
 		case propose := <-r.ProposeChan:
 			cmdId.ClientId = propose.ClientId
 			cmdId.SeqNum = propose.CommandId
-			dep := r.getDepAndUpdateInfo(propose.Command, cmdId)
+			dep := func() Dep {
+				if !r.AQ.Contains(r.Id) {
+					return nil
+				}
+				return r.getDepAndUpdateInfo(propose.Command, cmdId)
+			}()
 			desc := r.getCmdDesc(cmdId, propose, dep)
 			if desc == nil {
 				log.Fatal("Got propose for the delivered command:", cmdId)
@@ -268,7 +274,7 @@ func (r *Replica) run() {
 }
 
 func (r *Replica) handlePropose(msg *genericsmr.Propose,
-	desc *commandDesc, cmdId CommandId, dep Dep) {
+	desc *commandDesc, cmdId CommandId) {
 
 	if r.status != NORMAL || desc.phase != START || desc.propose != nil {
 		return
@@ -284,7 +290,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 	}
 
 	//desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
-	desc.dep = dep
+	desc.dep = desc.proposeDep
 	desc.phase = PRE_ACCEPT
 	if desc.afterPropagate.Recall() && desc.slowPath {
 		// in this case a process already sent a MSlowAck
@@ -489,17 +495,17 @@ func (r *Replica) handleCmdEnum() {
 	for !r.Shutdown {
 		for item := range r.cmdEnum.IterBuffered() {
 			cmdItem := item.Val.(*commandItem)
-			r.handleMsg(cmdItem.desc, cmdItem.cmdId, cmdItem.dep, false)
+			r.handleMsg(cmdItem.desc, cmdItem.cmdId, false)
 		}
 	}
 }
 
-func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, dep Dep, block bool) bool {
+func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, block bool) bool {
 	readMsg := func(m interface{}) bool {
 		switch msg := m.(type) {
 
 		case *genericsmr.Propose:
-			r.handlePropose(msg, desc, cmdId, dep)
+			r.handlePropose(msg, desc, cmdId)
 
 		case *MFastAck:
 			if msg.CmdId == cmdId {
@@ -552,9 +558,9 @@ func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, dep Dep, block b
 	}
 }
 
-func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId, dep Dep) {
+func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 	for desc.active {
-		if r.handleMsg(desc, cmdId, dep, true) {
+		if r.handleMsg(desc, cmdId, true) {
 			r.routineCount--
 			return
 		}
@@ -643,11 +649,18 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *command
 		return item.desc
 	}*/
 
+	updateProposeDep := func(desc *commandDesc) {
+		if dep != nil {
+			desc.proposeDep = dep
+		}
+	}
+
 	res := r.cmdDescs.Upsert(key, nil,
 		func(exists bool, mapV, _ interface{}) interface{} {
 			if exists {
 				desc := mapV.(*commandDesc)
 				if msg != nil {
+					updateProposeDep(desc)
 					go func() {
 						desc.msgs <- msg
 					}()
@@ -673,6 +686,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *command
 						return item
 					})
 				if msg != nil {
+					updateProposeDep(item.desc)
 					go func() {
 						// TODO: non-blocking write
 						item.desc.msgs <- msg
@@ -681,10 +695,11 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *command
 				return item.desc
 			}
 
-			go r.handleDesc(desc, cmdId, dep)
+			go r.handleDesc(desc, cmdId)
 			r.routineCount++
 
 			if msg != nil {
+				updateProposeDep(desc)
 				desc.msgs <- msg
 			}
 

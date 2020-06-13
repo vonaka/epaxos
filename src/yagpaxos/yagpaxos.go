@@ -73,7 +73,6 @@ type commandStaticDesc struct {
 type commandItem struct {
 	cmdId CommandId
 	desc  *commandDesc
-	dep   Dep
 }
 
 type CommunicationSupply struct {
@@ -538,9 +537,11 @@ func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, block bool) bool
 			r.history[msg].defered = desc.defered
 			desc.active = false
 			desc.fastAndSlowAcks.Free()
-			key := cmdId.String()
-			r.cmdEnum.Remove(key)
-			r.cmdDescs.Remove(key)
+			r.cmdDescs.RemoveCb(cmdId.String(),
+				func(key string, v interface{}, exists bool) bool {
+					r.cmdEnum.Remove(key)
+					return exists
+				})
 			r.freeDesc(desc)
 			return true
 		}
@@ -649,7 +650,6 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *command
 							item = &commandItem{
 								cmdId: cmdId,
 								desc:  desc,
-								dep:   dep,
 							}
 						}
 						return item

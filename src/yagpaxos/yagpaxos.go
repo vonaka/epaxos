@@ -34,6 +34,7 @@ type Replica struct {
 	qs QuorumSet
 	cs CommunicationSupply
 
+	usePool      bool
 	descPool     sync.Pool
 	routineCount int
 }
@@ -100,7 +101,7 @@ type CommunicationSupply struct {
 }
 
 func NewReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply bool, failures int, qfile string) *Replica {
+	thrifty, exec, lread, dreply, usePool bool, failures int, qfile string) *Replica {
 
 	r := &Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
@@ -141,6 +142,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 
 		routineCount: 0,
 
+		usePool:  usePool,
 		descPool: sync.Pool{
 			New: func() interface{} {
 				return &commandDesc{}
@@ -539,7 +541,7 @@ func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, block bool) bool
 			key := cmdId.String()
 			r.cmdEnum.Remove(key)
 			r.cmdDescs.Remove(key)
-			r.descPool.Put(desc)
+			r.freeDesc(desc)
 			return true
 		}
 
@@ -568,7 +570,7 @@ func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 }
 
 func (r *Replica) newDesc() *commandDesc {
-	desc := r.descPool.Get().(*commandDesc)
+	desc := r.allocDesc()
 	desc.dep = nil
 	if desc.msgs == nil {
 		desc.msgs = make(chan interface{}, 8)
@@ -615,39 +617,6 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *command
 	}
 
 	key := cmdId.String()
-
-	/*val, exists := r.cmdEnum.Get(key)
-	if exists {
-		item := val.(*commandItem)
-		if msg != nil {
-			go func() {
-				// TODO: try non-blocking write instead of goroutines
-				item.desc.msgs <- msg
-			}()
-		}
-		return item.desc
-	} else if r.routineCount >= MaxDescRoutines {
-		var item *commandItem
-		r.cmdEnum.Upsert(key, nil,
-			func(exists bool, mapV, _ interface{}) interface{} {
-				if exists {
-					item = mapV.(*commandItem)
-				} else {
-					item = &commandItem{
-						cmdId: cmdId,
-						desc:  r.newDesc(),
-					}
-				}
-				return item
-			})
-		if msg != nil {
-			go func() {
-				// TODO: non-blocking write
-				item.desc.msgs <- msg
-			}()
-		}
-		return item.desc
-	}*/
 
 	updateProposeDep := func(desc *commandDesc) {
 		if dep != nil {
@@ -731,4 +700,17 @@ func (r *Replica) getDepAndUpdateInfo(cmd state.Command, cmdId CommandId) Dep {
 	}
 
 	return dep
+}
+
+func (r *Replica) allocDesc() *commandDesc {
+	if r.usePool {
+		return r.descPool.Get().(*commandDesc)
+	}
+	return &commandDesc{}
+}
+
+func (r *Replica) freeDesc(desc *commandDesc) {
+	if r.usePool {
+		r.descPool.Put(desc)
+	}
 }

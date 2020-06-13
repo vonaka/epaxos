@@ -51,6 +51,7 @@ var lfile *string = flag.String("lfile", "NONE", "Latency file.")
 var proxy = flag.String("proxy", "NONE", "List of proxy IPs for this server")
 var qfile *string = flag.String("qfile", "", "Quorum config file (for yagpaxos only).")
 var descNum *int = flag.Int("desc", 100, "Number of command descriptors (only for yagpaxos and optpaxos).")
+var usePool *bool = flag.Bool("pool", true, "Use pools for internal allocations (only for yagpaxos andd optpaxos).")
 
 func initProxy(proxy string) {
 	if proxy == "NONE" {
@@ -171,7 +172,7 @@ func main() {
 		log.Println("Starting Yet Another Generalized Paxos replica...")
 		yagpaxos.MaxDescRoutines = *descNum
 		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
-			*lread, *dreply, *maxfailures, *qfile)
+			*lread, *dreply, *usePool, *maxfailures, *qfile)
 		rpc.Register(rep)
 	} else if *doOptpaxos {
 		log.Println("Starting optimized Paxos replica...")

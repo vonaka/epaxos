@@ -582,6 +582,7 @@ func (r *Replica) newDesc() *commandDesc {
 	desc.slowPath = false
 	desc.defered = func() {}
 	desc.propose = nil
+	desc.proposeDep = nil
 
 	desc.afterPropagate = desc.afterPropagate.ReinitCondF(func() bool {
 		return desc.propose != nil
@@ -641,27 +642,17 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *command
 
 			desc := r.newDesc()
 			if r.routineCount >= MaxDescRoutines {
-				var item *commandItem
-				r.cmdEnum.Upsert(key, nil,
-					func(exists bool, mapV, _ interface{}) interface{} {
-						if exists {
-							item = mapV.(*commandItem)
-						} else {
-							item = &commandItem{
-								cmdId: cmdId,
-								desc:  desc,
-							}
-						}
-						return item
-					})
+				r.cmdEnum.Set(key, &commandItem{
+					cmdId: cmdId,
+					desc:  desc,
+				})
 				if msg != nil {
-					updateProposeDep(item.desc)
+					updateProposeDep(desc)
 					go func() {
-						// TODO: non-blocking write
-						item.desc.msgs <- msg
+						desc.msgs <- msg
 					}()
 				}
-				return item.desc
+				return desc
 			}
 
 			go r.handleDesc(desc, cmdId)

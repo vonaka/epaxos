@@ -494,10 +494,10 @@ func (r *Replica) leader() int32 {
 
 func (r *Replica) handleCmdEnum() {
 	for !r.Shutdown {
-		for item := range r.cmdEnum.IterBuffered() {
-			cmdItem := item.Val.(*commandItem)
+		r.cmdEnum.IterCb(func(_ string, v interface{}) {
+			cmdItem := v.(*commandItem)
 			r.handleMsg(cmdItem.desc, cmdItem.cmdId, false)
-		}
+		})
 	}
 }
 

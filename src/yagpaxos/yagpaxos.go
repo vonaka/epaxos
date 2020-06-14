@@ -28,7 +28,7 @@ type Replica struct {
 	repchan *replyChan
 	history []commandStaticDesc
 	keys    map[state.Key]keyInfo
-	keysL   sync.Mutex
+	//keysL   sync.Mutex
 
 	AQ Quorum
 	qs QuorumSet
@@ -232,7 +232,7 @@ func (r *Replica) run() {
 			}()
 			desc := r.getCmdDesc(cmdId, propose, dep)
 			if desc == nil {
-				log.Fatal("Got propose for the delivered command:", cmdId)
+				log.Fatal("Got propose for the delivered command", cmdId)
 			}
 
 		case m := <-r.cs.fastAckChan:
@@ -613,60 +613,68 @@ func (r *Replica) newDesc() *commandDesc {
 }
 
 func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *commandDesc {
-
-	if r.delivered.Has(cmdId.String()) {
-		return nil
-	}
-
+	var desc *commandDesc = nil
 	key := cmdId.String()
 
-	updateProposeDep := func(desc *commandDesc) {
-		if dep != nil {
-			desc.proposeDep = dep
+	// TODO: this is the only possible way to lock `delivered` shard
+	//       and check the existence of an element.
+	//       Clearly this should be changed.
+
+	r.delivered.RemoveCb(key, func(_ string, _ interface{}, exists bool) bool {
+		if exists {
+			return false
 		}
-	}
 
-	res := r.cmdDescs.Upsert(key, nil,
-		func(exists bool, mapV, _ interface{}) interface{} {
-			if exists {
-				desc := mapV.(*commandDesc)
+		updateProposeDep := func(desc *commandDesc) {
+			if dep != nil {
+				desc.proposeDep = dep
+			}
+		}
+
+		r.cmdDescs.Upsert(key, nil,
+			func(exists bool, mapV, _ interface{}) interface{} {
+				if exists {
+					desc = mapV.(*commandDesc)
+					if msg != nil {
+						updateProposeDep(desc)
+						go func() {
+							desc.msgs <- msg
+						}()
+					}
+
+					return desc
+				}
+
+				desc = r.newDesc()
+				if r.routineCount >= MaxDescRoutines {
+					r.cmdEnum.Set(key, &commandItem{
+						cmdId: cmdId,
+						desc:  desc,
+					})
+					if msg != nil {
+						updateProposeDep(desc)
+						go func() {
+							desc.msgs <- msg
+						}()
+					}
+					return desc
+				}
+
+				go r.handleDesc(desc, cmdId)
+				r.routineCount++
+
 				if msg != nil {
 					updateProposeDep(desc)
-					go func() {
-						desc.msgs <- msg
-					}()
+					desc.msgs <- msg
 				}
 
 				return desc
-			}
+			})
 
-			desc := r.newDesc()
-			if r.routineCount >= MaxDescRoutines {
-				r.cmdEnum.Set(key, &commandItem{
-					cmdId: cmdId,
-					desc:  desc,
-				})
-				if msg != nil {
-					updateProposeDep(desc)
-					go func() {
-						desc.msgs <- msg
-					}()
-				}
-				return desc
-			}
+		return false
+	})
 
-			go r.handleDesc(desc, cmdId)
-			r.routineCount++
-
-			if msg != nil {
-				updateProposeDep(desc)
-				desc.msgs <- msg
-			}
-
-			return desc
-		})
-
-	return res.(*commandDesc)
+	return desc
 }
 
 func (r *Replica) getDepAndUpdateInfo(cmd state.Command, cmdId CommandId) Dep {

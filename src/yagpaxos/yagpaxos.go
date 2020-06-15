@@ -606,7 +606,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *command
 			}
 
 			desc = r.newDesc()
-			if desc.seq {
+			if !desc.seq {
 				go r.handleDesc(desc, cmdId)
 				r.routineCount++
 			}

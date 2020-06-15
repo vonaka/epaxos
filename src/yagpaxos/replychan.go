@@ -47,7 +47,7 @@ func NewReplyChan(r *Replica) *replyChan {
 	return rc
 }
 
-func (r *replyChan) reply(val state.Value, desc *commandDesc, cmdId CommandId) {
+func (r *replyChan) reply(desc *commandDesc, cmdId CommandId, val state.Value) {
 	r.args <- &replyArgs{
 		val:     val,
 		propose: desc.propose,

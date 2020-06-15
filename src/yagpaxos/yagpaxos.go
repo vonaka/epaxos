@@ -21,7 +21,7 @@ type Replica struct {
 	status  int
 
 	cmdDescs  cmap.ConcurrentMap
-	cmdEnum   cmap.ConcurrentMap
+	//cmdEnum   cmap.ConcurrentMap
 	delivered cmap.ConcurrentMap
 
 	sender  Sender
@@ -52,6 +52,7 @@ type commandDesc struct {
 	msgs     chan interface{}
 	active   bool
 	slowPath bool
+	seq      bool
 
 	successors  []*commandDesc
 	successorsL sync.Mutex
@@ -68,11 +69,6 @@ type commandStaticDesc struct {
 	dep      Dep
 	slowPath bool
 	defered  func()
-}
-
-type commandItem struct {
-	cmdId CommandId
-	desc  *commandDesc
 }
 
 type CommunicationSupply struct {
@@ -111,7 +107,6 @@ func NewReplica(replicaId int, peerAddrs []string,
 		status:  NORMAL,
 
 		cmdDescs:  cmap.New(),
-		cmdEnum:   cmap.New(),
 		delivered: cmap.New(),
 		history:   make([]commandStaticDesc, HISTORY_SIZE),
 		keys:      make(map[state.Key]keyInfo),
@@ -216,7 +211,6 @@ func (r *Replica) run() {
 	}
 
 	go r.WaitForClientConnections()
-	go r.handleCmdEnum()
 
 	var cmdId CommandId
 	for !r.Shutdown {
@@ -290,7 +284,6 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 		return
 	}
 
-	//desc.dep = r.getDepAndUpdateInfo(msg.Command, cmdId)
 	desc.dep = desc.proposeDep
 	desc.phase = PRE_ACCEPT
 	if desc.afterPropagate.Recall() && desc.slowPath {
@@ -485,85 +478,63 @@ func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 		return
 	}
 
-	r.repchan.reply(v, desc, cmdId)
+	r.repchan.reply(desc, cmdId, v)
+	if desc.seq {
+		// wait for the slot number
+		for !r.handleMsg(desc, cmdId, <-desc.msgs) {}
+	}
 }
 
 func (r *Replica) leader() int32 {
 	return leader(r.ballot, r.N)
 }
 
-func (r *Replica) handleCmdEnum() {
-	for !r.Shutdown {
-		r.cmdEnum.IterCb(func(_ string, v interface{}) {
-			cmdItem := v.(*commandItem)
-			r.handleMsg(cmdItem.desc, cmdItem.cmdId, false)
-		})
-	}
-}
+func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, m interface{}) bool {
+	switch msg := m.(type) {
 
-func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, block bool) bool {
-	readMsg := func(m interface{}) bool {
-		switch msg := m.(type) {
+	case *genericsmr.Propose:
+		r.handlePropose(msg, desc, cmdId)
 
-		case *genericsmr.Propose:
-			r.handlePropose(msg, desc, cmdId)
-
-		case *MFastAck:
-			if msg.CmdId == cmdId {
-				r.handleFastAck(msg, desc)
-			}
-
-		case *MSlowAck:
-			if msg.CmdId == cmdId {
-				r.handleSlowAck(msg, desc)
-			}
-
-		case *MLightSlowAck:
-			if msg.CmdId == cmdId {
-				r.handleLightSlowAck(msg, desc)
-			}
-
-		case string:
-			if msg == "deliver" {
-				r.deliver(cmdId, desc)
-			}
-
-		case int:
-			r.history[msg].cmdId = cmdId
-			r.history[msg].phase = desc.phase
-			r.history[msg].cmd = desc.cmd
-			r.history[msg].dep = desc.dep
-			r.history[msg].slowPath = desc.slowPath
-			r.history[msg].defered = desc.defered
-			desc.active = false
-			desc.fastAndSlowAcks.Free()
-			r.cmdDescs.RemoveCb(cmdId.String(),
-				func(key string, v interface{}, exists bool) bool {
-					r.cmdEnum.Remove(key)
-					return exists
-				})
-			r.freeDesc(desc)
-			return true
+	case *MFastAck:
+		if msg.CmdId == cmdId {
+			r.handleFastAck(msg, desc)
 		}
 
-		return false
+	case *MSlowAck:
+		if msg.CmdId == cmdId {
+			r.handleSlowAck(msg, desc)
+		}
+
+	case *MLightSlowAck:
+		if msg.CmdId == cmdId {
+			r.handleLightSlowAck(msg, desc)
+		}
+
+	case string:
+		if msg == "deliver" {
+			r.deliver(cmdId, desc)
+		}
+
+	case int:
+		r.history[msg].cmdId = cmdId
+		r.history[msg].phase = desc.phase
+		r.history[msg].cmd = desc.cmd
+		r.history[msg].dep = desc.dep
+		r.history[msg].slowPath = desc.slowPath
+		r.history[msg].defered = desc.defered
+		desc.active = false
+		desc.fastAndSlowAcks.Free()
+		r.cmdDescs.Remove(cmdId.String())
+		r.freeDesc(desc)
+		return true
 	}
 
-	if block {
-		return readMsg(<-desc.msgs)
-	}
-
-	select {
-	case msg := <-desc.msgs:
-		return readMsg(msg)
-	default:
-		return false
-	}
+	return false
 }
 
 func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 	for desc.active {
-		if r.handleMsg(desc, cmdId, true) {
+		if r.handleMsg(desc, cmdId, <-desc.msgs) {
 			r.routineCount--
 			return
 		}
@@ -580,6 +551,7 @@ func (r *Replica) newDesc() *commandDesc {
 	desc.phase = START
 	desc.successors = nil
 	desc.slowPath = false
+	desc.seq = (r.routineCount >= MaxDescRoutines)
 	desc.defered = func() {}
 	desc.propose = nil
 	desc.proposeDep = nil
@@ -613,66 +585,42 @@ func (r *Replica) newDesc() *commandDesc {
 }
 
 func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *commandDesc {
-	var desc *commandDesc = nil
 	key := cmdId.String()
+	if r.delivered.Has(key) {
+		return nil
+	}
 
-	// TODO: this is the only possible way to lock `delivered` shard
-	//       and check the existence of an element.
-	//       Clearly this should be changed.
+	var desc *commandDesc
 
-	r.delivered.RemoveCb(key, func(_ string, _ interface{}, exists bool) bool {
-		if exists {
-			return false
-		}
+	r.cmdDescs.Upsert(key, nil,
+		func(exists bool, mapV, _ interface{}) interface{} {
+			defer func() {
+				if dep != nil {
+					desc.proposeDep = dep
+				}
+			}()
 
-		updateProposeDep := func(desc *commandDesc) {
-			if dep != nil {
-				desc.proposeDep = dep
+			if exists {
+				desc = mapV.(*commandDesc)
+				return desc
 			}
-		}
 
-		r.cmdDescs.Upsert(key, nil,
-			func(exists bool, mapV, _ interface{}) interface{} {
-				if exists {
-					desc = mapV.(*commandDesc)
-					if msg != nil {
-						updateProposeDep(desc)
-						go func() {
-							desc.msgs <- msg
-						}()
-					}
-
-					return desc
-				}
-
-				desc = r.newDesc()
-				if r.routineCount >= MaxDescRoutines {
-					r.cmdEnum.Set(key, &commandItem{
-						cmdId: cmdId,
-						desc:  desc,
-					})
-					if msg != nil {
-						updateProposeDep(desc)
-						go func() {
-							desc.msgs <- msg
-						}()
-					}
-					return desc
-				}
-
+			desc = r.newDesc()
+			if desc.seq {
 				go r.handleDesc(desc, cmdId)
 				r.routineCount++
+			}
 
-				if msg != nil {
-					updateProposeDep(desc)
-					desc.msgs <- msg
-				}
+			return desc
+		})
 
-				return desc
-			})
-
-		return false
-	})
+	if msg != nil {
+		if desc.seq {
+			r.handleMsg(desc, cmdId, msg)
+		} else {
+			desc.msgs <- msg
+		}
+	}
 
 	return desc
 }

@@ -344,6 +344,10 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 
 		desc.phase = ACCEPT
 		desc.fastAndSlowAcks.Add(msg.Replica, true, msg)
+		if r.delivered.Has(msg.CmdId.String()) {
+			// this can happen if desc.seq == true
+			return
+		}
 		dep := Dep(msg.Dep)
 		equals, diffs := desc.dep.EqualsAndDiff(dep)
 
@@ -406,7 +410,7 @@ func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
 			depDesc.successorsL.Unlock()
 		}
 
-		r.deliver(leaderFastAck.CmdId, desc)
+		r.deliver(desc, leaderFastAck.CmdId)
 	}
 }
 
@@ -447,7 +451,7 @@ func (r *Replica) handleCollect(msg *MCollect) {
 
 }
 
-func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
+func (r *Replica) deliver(desc *commandDesc, cmdId CommandId) {
 	// TODO: what if desc.propose is nil ?
 	//       is that possible ?
 	//       Don't think so
@@ -488,7 +492,14 @@ func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 	r.repchan.reply(desc, cmdId, v)
 	if desc.seq {
 		// wait for the slot number
-		for !r.handleMsg(desc, cmdId, <-desc.msgs) {}
+		// and ignore any other message
+		for {
+			switch slot := (<-desc.msgs).(type) {
+			case int:
+				r.handleMsg(slot, desc, cmdId)
+				return
+			}
+		}
 	}
 }
 
@@ -496,7 +507,7 @@ func (r *Replica) leader() int32 {
 	return leader(r.ballot, r.N)
 }
 
-func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, m interface{}) bool {
+func (r *Replica) handleMsg(m interface{}, desc *commandDesc, cmdId CommandId) bool {
 	switch msg := m.(type) {
 
 	case *genericsmr.Propose:
@@ -519,7 +530,7 @@ func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, m interface{}) b
 
 	case string:
 		if msg == "deliver" {
-			r.deliver(cmdId, desc)
+			r.deliver(desc, cmdId)
 		}
 
 	case int:
@@ -541,7 +552,7 @@ func (r *Replica) handleMsg(desc *commandDesc, cmdId CommandId, m interface{}) b
 
 func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
 	for desc.active {
-		if r.handleMsg(desc, cmdId, <-desc.msgs) {
+		if r.handleMsg(<-desc.msgs, desc, cmdId) {
 			r.routineCount--
 			return
 		}
@@ -623,7 +634,7 @@ func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *command
 
 	if msg != nil {
 		if desc.seq {
-			r.handleMsg(desc, cmdId, msg)
+			r.handleMsg(msg, desc, cmdId)
 		} else {
 			desc.msgs <- msg
 		}

@@ -406,7 +406,7 @@ func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
 				continue
 			}
 			depDesc.successorsL.Lock()
-			depDesc.successors = append(depDesc.successors, depCmdId)
+			depDesc.successors = append(depDesc.successors, leaderFastAck.CmdId)
 			depDesc.successorsL.Unlock()
 		}
 

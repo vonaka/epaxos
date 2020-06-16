@@ -382,11 +382,13 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 }
 
 func (r *Replica) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
-	if r.status != NORMAL || r.ballot != msg.Ballot {
-		return
-	}
+	desc.afterPropagate.Call(func() {
+		if r.status != NORMAL || r.ballot != msg.Ballot {
+			return
+		}
 
-	desc.fastAndSlowAcks.Add(msg.Replica, false, msg)
+		desc.fastAndSlowAcks.Add(msg.Replica, false, msg)
+	})
 }
 
 func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {

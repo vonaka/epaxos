@@ -34,6 +34,8 @@ type Replica struct {
 	qs QuorumSet
 	cs CommunicationSupply
 
+	deliverChan chan CommandId
+
 	usePool      bool
 	descPool     sync.Pool
 	routineCount int
@@ -54,7 +56,7 @@ type commandDesc struct {
 	slowPath bool
 	seq      bool
 
-	successors  []*commandDesc
+	successors  []CommandId
 	successorsL sync.Mutex
 
 	// will be executed before sending
@@ -133,6 +135,8 @@ func NewReplica(replicaId int, peerAddrs []string,
 			collectChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 		},
+
+		deliverChan: make(chan CommandId, genericsmr.CHAN_BUFFER_SIZE),
 
 		routineCount: 0,
 
@@ -215,6 +219,9 @@ func (r *Replica) run() {
 	var cmdId CommandId
 	for !r.Shutdown {
 		select {
+		case cmdId := <-r.deliverChan:
+			r.getCmdDesc(cmdId, "deliver", nil)
+
 		case propose := <-r.ProposeChan:
 			cmdId.ClientId = propose.ClientId
 			cmdId.SeqNum = propose.CommandId
@@ -395,7 +402,7 @@ func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {
 				continue
 			}
 			depDesc.successorsL.Lock()
-			depDesc.successors = append(depDesc.successors, desc)
+			depDesc.successors = append(depDesc.successors, depCmdId)
 			depDesc.successorsL.Unlock()
 		}
 
@@ -466,10 +473,10 @@ func (r *Replica) deliver(cmdId CommandId, desc *commandDesc) {
 
 	desc.successorsL.Lock()
 	if desc.successors != nil {
-		for i := 0; i < len(desc.successors); i++ {
-			go func(msgs chan interface{}) {
-				msgs <- "deliver"
-			}(desc.successors[i].msgs)
+		for _, sucCmdId := range desc.successors {
+			go func(sucCmdId CommandId) {
+				r.deliverChan <- sucCmdId
+			}(sucCmdId)
 		}
 	}
 	desc.successorsL.Unlock()

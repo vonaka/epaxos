@@ -343,14 +343,14 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 
 		desc.phase = ACCEPT
 		msgCmdId := msg.CmdId
+		dep := Dep(msg.Dep)
 		desc.fastAndSlowAcks.Add(msg.Replica, true, msg)
 		if r.delivered.Has(msgCmdId.String()) {
-			// it is important to check the saved value,
 			// since at this point msg can be already deallocated,
+			// it is important to check the saved value,
 			// all this can happen if desc.seq == true
 			return
 		}
-		dep := Dep(msg.Dep)
 		equals, diffs := desc.dep.EqualsAndDiff(dep)
 
 		if !equals {
@@ -374,7 +374,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 			lightSlowAck := &MLightSlowAck{
 				Replica: r.Id,
 				Ballot:  r.ballot,
-				CmdId:   msg.CmdId,
+				CmdId:   msgCmdId,
 			}
 
 			r.sender.SendToAll(lightSlowAck, r.cs.lightSlowAckRPC)

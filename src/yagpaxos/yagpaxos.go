@@ -21,7 +21,6 @@ type Replica struct {
 	status  int
 
 	cmdDescs  cmap.ConcurrentMap
-	//cmdEnum   cmap.ConcurrentMap
 	delivered cmap.ConcurrentMap
 
 	sender  Sender
@@ -295,7 +294,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 	desc.phase = PRE_ACCEPT
 	if desc.afterPropagate.Recall() && desc.slowPath {
 		// in this case a process already sent a MSlowAck
-		// message, hence, no need to sent MFastAck
+		// message, hence, no need to send MFastAck
 		return
 	}
 
@@ -343,9 +342,12 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 		// seems to be satisfied already
 
 		desc.phase = ACCEPT
+		msgCmdId := msg.CmdId
 		desc.fastAndSlowAcks.Add(msg.Replica, true, msg)
-		if r.delivered.Has(msg.CmdId.String()) {
-			// this can happen if desc.seq == true
+		if r.delivered.Has(msgCmdId.String()) {
+			// it is important to check the saved value,
+			// since at this point msg can be already deallocated,
+			// all this can happen if desc.seq == true
 			return
 		}
 		dep := Dep(msg.Dep)
@@ -382,13 +384,11 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 }
 
 func (r *Replica) commonCaseFastAck(msg *MFastAck, desc *commandDesc) {
-	desc.afterPropagate.Call(func() {
-		if r.status != NORMAL || r.ballot != msg.Ballot {
-			return
-		}
+	if r.status != NORMAL || r.ballot != msg.Ballot {
+		return
+	}
 
-		desc.fastAndSlowAcks.Add(msg.Replica, false, msg)
-	})
+	desc.fastAndSlowAcks.Add(msg.Replica, false, msg)
 }
 
 func getFastAndSlowAcksHandler(r *Replica, desc *commandDesc) MsgSetHandler {

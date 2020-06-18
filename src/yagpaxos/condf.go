@@ -69,3 +69,55 @@ func (cf *CondF) OrCond(cond func() bool) {
 		return oldCond() || cond()
 	}
 }
+
+type OptCondF struct {
+	cond     func() bool
+	funs     []func()
+	funs_num int
+}
+
+func NewOptCondF(cond func() bool) *OptCondF {
+	return &OptCondF{
+		cond:     cond,
+		funs:     nil,
+		funs_num: 0,
+	}
+}
+
+func (cf *OptCondF) ReinitCondF(cond func() bool) *OptCondF {
+	if cf == nil {
+		return NewOptCondF(cond)
+	}
+
+	cf.cond = cond
+	cf.funs_num = 0
+	return cf
+}
+
+func (cf *OptCondF) Call(f func()) bool {
+	if cf.cond() {
+		for i := 0; i < cf.funs_num; i++ {
+			cf.funs[i]()
+		}
+		cf.funs_num = 0
+		return true
+	}
+	if cf.funs_num >= len(cf.funs) {
+		cf.funs = append(cf.funs, f)
+	} else {
+		cf.funs[cf.funs_num] = f
+	}
+	cf.funs_num++
+	return false
+}
+
+func (cf *OptCondF) Recall() bool {
+	if cf.funs_num > 0 && cf.cond() {
+		for i := 0; i < cf.funs_num; i++ {
+			cf.funs[i]()
+		}
+		cf.funs_num = 0
+		return true
+	}
+	return false
+}

@@ -27,7 +27,6 @@ type Replica struct {
 	repchan *replyChan
 	history []commandStaticDesc
 	keys    map[state.Key]keyInfo
-	//keysL   sync.Mutex
 
 	AQ Quorum
 	qs QuorumSet
@@ -48,7 +47,7 @@ type commandDesc struct {
 	proposeDep Dep
 
 	fastAndSlowAcks *MsgSet
-	afterPropagate  *CondF
+	afterPropagate  *OptCondF
 
 	msgs     chan interface{}
 	active   bool
@@ -505,60 +504,45 @@ func (r *Replica) deliver(desc *commandDesc, cmdId CommandId) {
 	}
 }
 
-func (r *Replica) leader() int32 {
-	return leader(r.ballot, r.N)
-}
-
-func (r *Replica) handleMsg(m interface{}, desc *commandDesc, cmdId CommandId) bool {
-	switch msg := m.(type) {
-
-	case *genericsmr.Propose:
-		r.handlePropose(msg, desc, cmdId)
-
-	case *MFastAck:
-		if msg.CmdId == cmdId {
-			r.handleFastAck(msg, desc)
-		}
-
-	case *MSlowAck:
-		if msg.CmdId == cmdId {
-			r.handleSlowAck(msg, desc)
-		}
-
-	case *MLightSlowAck:
-		if msg.CmdId == cmdId {
-			r.handleLightSlowAck(msg, desc)
-		}
-
-	case string:
-		if msg == "deliver" {
-			r.deliver(desc, cmdId)
-		}
-
-	case int:
-		r.history[msg].cmdId = cmdId
-		r.history[msg].phase = desc.phase
-		r.history[msg].cmd = desc.cmd
-		r.history[msg].dep = desc.dep
-		r.history[msg].slowPath = desc.slowPath
-		r.history[msg].defered = desc.defered
-		desc.active = false
-		desc.fastAndSlowAcks.Free()
-		r.cmdDescs.Remove(cmdId.String())
-		r.freeDesc(desc)
-		return true
+func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *commandDesc {
+	key := cmdId.String()
+	if r.delivered.Has(key) {
+		return nil
 	}
 
-	return false
-}
+	var desc *commandDesc
 
-func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
-	for desc.active {
-		if r.handleMsg(<-desc.msgs, desc, cmdId) {
-			r.routineCount--
-			return
+	r.cmdDescs.Upsert(key, nil,
+		func(exists bool, mapV, _ interface{}) interface{} {
+			defer func() {
+				if dep != nil {
+					desc.proposeDep = dep
+				}
+			}()
+
+			if exists {
+				desc = mapV.(*commandDesc)
+				return desc
+			}
+
+			desc = r.newDesc()
+			if !desc.seq {
+				go r.handleDesc(desc, cmdId)
+				r.routineCount++
+			}
+
+			return desc
+		})
+
+	if msg != nil {
+		if desc.seq {
+			r.handleMsg(msg, desc, cmdId)
+		} else {
+			desc.msgs <- msg
 		}
 	}
+
+	return desc
 }
 
 func (r *Replica) newDesc() *commandDesc {
@@ -604,51 +588,76 @@ func (r *Replica) newDesc() *commandDesc {
 	return desc
 }
 
-func (r *Replica) getCmdDesc(cmdId CommandId, msg interface{}, dep Dep) *commandDesc {
-	key := cmdId.String()
-	if r.delivered.Has(key) {
-		return nil
+func (r *Replica) allocDesc() *commandDesc {
+	if r.usePool {
+		return r.descPool.Get().(*commandDesc)
 	}
+	return &commandDesc{}
+}
 
-	var desc *commandDesc
+func (r *Replica) freeDesc(desc *commandDesc) {
+	if r.usePool {
+		r.descPool.Put(desc)
+	}
+}
 
-	r.cmdDescs.Upsert(key, nil,
-		func(exists bool, mapV, _ interface{}) interface{} {
-			defer func() {
-				if dep != nil {
-					desc.proposeDep = dep
-				}
-			}()
-
-			if exists {
-				desc = mapV.(*commandDesc)
-				return desc
-			}
-
-			desc = r.newDesc()
-			if !desc.seq {
-				go r.handleDesc(desc, cmdId)
-				r.routineCount++
-			}
-
-			return desc
-		})
-
-	if msg != nil {
-		if desc.seq {
-			r.handleMsg(msg, desc, cmdId)
-		} else {
-			desc.msgs <- msg
+func (r *Replica) handleDesc(desc *commandDesc, cmdId CommandId) {
+	for desc.active {
+		if r.handleMsg(<-desc.msgs, desc, cmdId) {
+			r.routineCount--
+			return
 		}
 	}
+}
 
-	return desc
+func (r *Replica) handleMsg(m interface{}, desc *commandDesc, cmdId CommandId) bool {
+	switch msg := m.(type) {
+
+	case *genericsmr.Propose:
+		r.handlePropose(msg, desc, cmdId)
+
+	case *MFastAck:
+		if msg.CmdId == cmdId {
+			r.handleFastAck(msg, desc)
+		}
+
+	case *MSlowAck:
+		if msg.CmdId == cmdId {
+			r.handleSlowAck(msg, desc)
+		}
+
+	case *MLightSlowAck:
+		if msg.CmdId == cmdId {
+			r.handleLightSlowAck(msg, desc)
+		}
+
+	case string:
+		if msg == "deliver" {
+			r.deliver(desc, cmdId)
+		}
+
+	case int:
+		r.history[msg].cmdId = cmdId
+		r.history[msg].phase = desc.phase
+		r.history[msg].cmd = desc.cmd
+		r.history[msg].dep = desc.dep
+		r.history[msg].slowPath = desc.slowPath
+		r.history[msg].defered = desc.defered
+		desc.active = false
+		desc.fastAndSlowAcks.Free()
+		r.cmdDescs.Remove(cmdId.String())
+		r.freeDesc(desc)
+		return true
+	}
+
+	return false
+}
+
+func (r *Replica) leader() int32 {
+	return leader(r.ballot, r.N)
 }
 
 func (r *Replica) getDepAndUpdateInfo(cmd state.Command, cmdId CommandId) Dep {
-	//r.keysL.Lock()
-	//defer r.keysL.Unlock()
-
 	dep := []CommandId{}
 	keysOfCmd := keysOf(cmd)
 
@@ -667,17 +676,4 @@ func (r *Replica) getDepAndUpdateInfo(cmd state.Command, cmdId CommandId) Dep {
 	}
 
 	return dep
-}
-
-func (r *Replica) allocDesc() *commandDesc {
-	if r.usePool {
-		return r.descPool.Get().(*commandDesc)
-	}
-	return &commandDesc{}
-}
-
-func (r *Replica) freeDesc(desc *commandDesc) {
-	if r.usePool {
-		r.descPool.Put(desc)
-	}
 }

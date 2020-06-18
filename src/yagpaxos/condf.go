@@ -96,9 +96,7 @@ func (cf *OptCondF) ReinitCondF(cond func() bool) *OptCondF {
 
 func (cf *OptCondF) Call(f func()) bool {
 	if cf.cond() {
-		for i := 0; i < cf.funs_num; i++ {
-			cf.funs[i]()
-		}
+		f()
 		cf.funs_num = 0
 		return true
 	}

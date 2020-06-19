@@ -10,7 +10,6 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"runtime"
 	"state"
 	"strconv"
 	"strings"
@@ -30,10 +29,9 @@ var writes *int = flag.Int("w", 100, "Percentage of updates (writes).")
 var psize *int = flag.Int("psize", 100, "Payload size for writes.")
 var noLeader *bool = flag.Bool("e", false, "Egalitarian (no leader).")
 var fast *bool = flag.Bool("f", false,
-	"Fast Paxos: send message directly to all replicas. ")
+	"Fast Paxos: send message directly to all replicas.")
 var localReads *bool = flag.Bool("l", false,
 	"Execute reads at the closest (local) replica. ")
-var procs *int = flag.Int("p", 2, "GOMAXPROCS.")
 var conflicts *int = flag.Int("c", 0, "Percentage of conflicts. Defaults to 0%")
 var verbose *bool = flag.Bool("v", false, "Verbose mode.")
 var scan *bool = flag.Bool("s", false,
@@ -104,8 +102,6 @@ func main() {
 	flag.Parse()
 
 	updateLatencies(*lfile)
-
-	runtime.GOMAXPROCS(*procs)
 
 	rand.Seed(time.Now().UnixNano())
 

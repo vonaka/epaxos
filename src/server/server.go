@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/signal"
 	"paxos"
-	"runtime"
 	"runtime/pprof"
 	"strings"
 	"syscall"
@@ -34,7 +33,6 @@ var doGpaxos *bool = flag.Bool("g", false, "Use Generalized Paxos as the replica
 var doEpaxos *bool = flag.Bool("e", false, "Use EPaxos as the replication protocol. Defaults to false.")
 var doYagpaxos *bool = flag.Bool("y", false, "Use Yet Another GPaxos as the replication protocol. Defaults to false.")
 var doOptpaxos *bool = flag.Bool("optpaxos", false, "Use optimized Paxos as the replication protocol. Defaults to false.")
-var procs *int = flag.Int("p", 2, "GOMAXPROCS. Defaults to 2")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var thrifty = flag.Bool("thrifty", false, "Use only as many messages as strictly required for inter-replica communication.")
 var exec = flag.Bool("exec", true, "Execute commands.")
@@ -124,8 +122,6 @@ func main() {
 
 	updateLatencies(*lfile)
 	initProxy(*proxy)
-
-	runtime.GOMAXPROCS(*procs)
 
 	genericsmr.CollocatedWith = strings.Split(*collocatedWith, ".")[0]
 	genericsmr.Latency, _ = time.ParseDuration(*latency + "ms")

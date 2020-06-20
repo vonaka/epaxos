@@ -27,11 +27,7 @@ const FALSE = uint8(0)
 
 var (
 	storage string
-
-	CollocatedWith = "NONE"
-	Latency        = time.Duration(0)
-	AddrLatency    = make(map[string]time.Duration)
-	ProxyAddrs     = make(map[string]struct{})
+	ProxyAddrs = make(map[string]struct{})
 )
 
 type RPCPair struct {
@@ -206,9 +202,7 @@ func (r *Replica) ConnectToPeers() {
 		if int32(rid) == r.Id {
 			continue
 		}
-		addr := strings.Split(r.PeerAddrList[rid], ":")[0]
-		delay := r.getDelay(addr)
-		go r.replicaListener(rid, reader, delay)
+		go r.replicaListener(rid, reader)
 	}
 
 }
@@ -291,22 +285,7 @@ func (r *Replica) WaitForClientConnections() {
 	}
 }
 
-func (r *Replica) getDelay(addr string) time.Duration {
-	d, exists := AddrLatency[addr]
-	if exists {
-		return d
-	}
-
-	if addr != CollocatedWith {
-		return Latency
-	}
-
-	d, _ = time.ParseDuration("0ms")
-	return d
-}
-
-func (r *Replica) replicaListener(rid int,
-	reader *bufio.Reader, delay time.Duration) {
+func (r *Replica) replicaListener(rid int, reader *bufio.Reader) {
 	var msgType uint8
 	var err error = nil
 	var gbeacon genericsmrproto.Beacon
@@ -347,7 +326,6 @@ func (r *Replica) replicaListener(rid int,
 					break
 				}
 				go func() {
-					time.Sleep(delay)
 					rpair.Chan <- obj
 				}()
 			} else {
@@ -375,7 +353,6 @@ func (r *Replica) clientListener(conn net.Conn) {
 	r.M.Unlock()
 
 	addr := strings.Split(conn.RemoteAddr().String(), ":")[0]
-	delay := r.getDelay(addr)
 	_, isProxy := ProxyAddrs[addr]
 
 	mutex := &sync.Mutex{}
@@ -403,13 +380,12 @@ func (r *Replica) clientListener(conn net.Conn) {
 				r.ReplyProposeTS(propreply, writer, mutex)
 			} else {
 				go func(propose *Propose) {
-					time.Sleep(delay)
 					r.ProposeChan <- propose
 				}(&Propose{
 					Propose:    propose,
 					Reply:      writer,
 					Mutex:      mutex,
-					Collocated: isProxy || (delay == 0 && len(ProxyAddrs) == 0),
+					Collocated: isProxy || len(ProxyAddrs) == 0,
 				})
 			}
 			break

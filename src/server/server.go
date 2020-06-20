@@ -18,7 +18,6 @@ import (
 	"os/signal"
 	"paxos"
 	"runtime/pprof"
-	"strings"
 	"syscall"
 	"time"
 	"yagpaxos"
@@ -43,9 +42,6 @@ var maxfailures = flag.Int("maxfailures", -1, "maximum number of maxfailures; de
 var durable = flag.Bool("durable", false, "Log to a stable store (i.e., a file in the current dir).")
 var batchWait *int = flag.Int("batchwait", 0, "Milliseconds to wait before sending a batch. If set to 0, batching is disabled. Defaults to 0.")
 var transitiveConflicts *bool = flag.Bool("transitiveconf", true, "Conflict relation is transitive.")
-var latency *string = flag.String("delay", "0", "Node latency (in ms).")
-var collocatedWith *string = flag.String("client", "NONE", "Client with which this server is collocated")
-var lfile *string = flag.String("lfile", "NONE", "Latency file.")
 var proxy = flag.String("proxy", "NONE", "List of proxy IPs for this server")
 var qfile *string = flag.String("qfile", "", "Quorum config file (for yagpaxos only).")
 var descNum *int = flag.Int("desc", 100, "Number of command descriptors (only for yagpaxos and optpaxos).")
@@ -69,62 +65,10 @@ func initProxy(proxy string) {
 
 }
 
-func updateLatencies(filename string) {
-	if filename == "NONE" {
-		if *collocatedWith != "NONE" {
-			zero, _ := time.ParseDuration("0ms")
-			addrs, _ := net.LookupIP(*collocatedWith)
-			for _, addr := range addrs {
-				genericsmr.AddrLatency[addr.String()] = zero
-			}
-		}
-		return
-	}
-
-	f, err := os.Open(filename)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		d := strings.Split(s.Text(), ",")
-		if len(d) != 3 {
-			log.Fatal(filename + ": Wrong file format")
-		}
-
-		delay, _ := time.ParseDuration(d[2] + "ms")
-
-		if *myAddr == d[0] {
-			genericsmr.AddrLatency[d[1]] = delay
-			addrs, _ := net.LookupIP(d[1])
-			for _, addr := range addrs {
-				genericsmr.AddrLatency[addr.String()] = delay
-			}
-		} else if *myAddr == d[1] {
-			genericsmr.AddrLatency[d[0]] = delay
-			addrs, _ := net.LookupIP(d[0])
-			for _, addr := range addrs {
-				genericsmr.AddrLatency[addr.String()] = delay
-			}
-		}
-	}
-
-	err = s.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
 func main() {
 	flag.Parse()
 
-	updateLatencies(*lfile)
 	initProxy(*proxy)
-
-	genericsmr.CollocatedWith = strings.Split(*collocatedWith, ".")[0]
-	genericsmr.Latency, _ = time.ParseDuration(*latency + "ms")
 
 	if *doMencius && *thrifty {
 		log.Fatal("incompatble options -m -thrifty")

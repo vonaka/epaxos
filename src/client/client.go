@@ -2,17 +2,14 @@ package main
 
 import (
 	"bindings"
-	"bufio"
 	"dlog"
 	"flag"
 	"fmt"
 	"log"
 	"math/rand"
-	"net"
 	"os"
 	"state"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -36,72 +33,17 @@ var conflicts *int = flag.Int("c", 0, "Percentage of conflicts. Defaults to 0%")
 var verbose *bool = flag.Bool("v", false, "Verbose mode.")
 var scan *bool = flag.Bool("s", false,
 	"Replace read with short scan (100 elements)")
-var latency *string = flag.String("delay", "0", "Node latency (in ms).")
 var collocatedWith *string = flag.String("server", "NONE",
 	"Server with which this client is collocated")
-var lfile *string = flag.String("lfile", "NONE", "Latency file.")
-var almostFast *bool = flag.Bool("af", false,
-	"Almost fast (send propose to the leader and collocated server, " +
-		"needed for optimized Paxos).")
 var myAddr *string = flag.String("addr", "",
 	"Client address (this machine). Defaults to localhost.")
 var cloneNb *int = flag.Int("clone", 0,
 	"Number of clones (unique clients acting like this one).")
 var logFile *string = flag.String("logf", "", "Path to the log file.")
 
-func updateLatencies(filename string) {
-	if filename == "NONE" {
-		if *collocatedWith != "NONE" {
-			zero, _ := time.ParseDuration("0ms")
-			addrs, _ := net.LookupIP(*collocatedWith)
-			for _, addr := range addrs {
-				bindings.AddrLatency[addr.String()] = zero
-			}
-		}
-		return
-	}
-
-	f, err := os.Open(filename)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer f.Close()
-
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		d := strings.Split(s.Text(), ",")
-		if len(d) != 3 {
-			log.Fatal(filename + ": Wrong file format")
-		}
-
-		delay, _ := time.ParseDuration(d[2] + "ms")
-
-		if *myAddr == d[0] {
-			bindings.AddrLatency[d[1]] = delay
-			addrs, _ := net.LookupIP(d[1])
-			for _, addr := range addrs {
-				bindings.AddrLatency[addr.String()] = delay
-			}
-		} else if *myAddr == d[1] {
-			bindings.AddrLatency[d[0]] = delay
-			addrs, _ := net.LookupIP(d[0])
-			for _, addr := range addrs {
-				bindings.AddrLatency[addr.String()] = delay
-			}
-		}
-	}
-
-	err = s.Err()
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
 func main() {
 
 	flag.Parse()
-
-	updateLatencies(*lfile)
 
 	rand.Seed(time.Now().UnixNano())
 
@@ -109,7 +51,6 @@ func main() {
 		log.Fatalf("Conflicts percentage must be between 0 and 100.\n")
 	}
 
-	bindings.Latency, _ = time.ParseDuration(*latency + "ms")
 	bindings.CollocatedWith = *collocatedWith
 
 	var wg sync.WaitGroup
@@ -141,7 +82,7 @@ func runProxy(logPath string) {
 	var proxy *bindings.Parameters
 	for {
 		proxy = bindings.NewParameters(*masterAddr, *masterPort,
-			*verbose, *noLeader, *fast, *almostFast, *localReads, logger)
+			*verbose, *noLeader, *fast, *localReads, logger)
 		err := proxy.Connect()
 		if err == nil {
 			break

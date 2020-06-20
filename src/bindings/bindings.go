@@ -47,27 +47,14 @@ type Parameters struct {
 	id             int32
 	retries        int32
 
-	repChan  chan *fastRep
-	maxCmdId int32
-
 	collocatedWith string
 	collocatedId   int
-	latency        time.Duration
-	idLatency      map[int]time.Duration
-	addrLatency    map[string]time.Duration
 
 	logger *log.Logger
 }
 
-type fastRep struct {
-	rep *genericsmrproto.ProposeReplyTS
-	id  int
-}
-
 var (
 	CollocatedWith = "NONE"
-	Latency        = time.Duration(0)
-	AddrLatency    = make(map[string]time.Duration)
 )
 
 func getClinetId() int32 {
@@ -75,14 +62,14 @@ func getClinetId() int32 {
 }
 
 func NewParameters(masterAddr string, masterPort int,
-	verbose, leaderless, fast, almostFast, localReads bool,
+	verbose, leaderless, fast, localReads bool,
 	logger *log.Logger) *Parameters {
 
 	if logger == nil {
 		logger = log.New(os.Stderr, "", log.LstdFlags)
 	}
 
-	p := &Parameters{
+	return &Parameters{
 		clientId:       getClinetId(),
 		masterAddr:     masterAddr,
 		masterPort:     masterPort,
@@ -92,7 +79,6 @@ func NewParameters(masterAddr string, masterPort int,
 		Leader:         0,
 		leaderless:     leaderless,
 		isFast:         fast,
-		isAlmostFast:   almostFast,
 		n:              0,
 		replicaLists:   nil,
 		servers:        nil,
@@ -101,22 +87,11 @@ func NewParameters(masterAddr string, masterPort int,
 		id:             0,
 		retries:        10,
 
-		maxCmdId: 0,
-
 		collocatedWith: CollocatedWith,
 		collocatedId:   -1,
-		latency:        Latency,
-		idLatency:      make(map[int]time.Duration),
-		addrLatency:    make(map[string]time.Duration),
 
 		logger: logger,
 	}
-
-	for k,v := range AddrLatency {
-		p.addrLatency[k] = v
-	}
-
-	return p
 }
 
 func (b *Parameters) Id() int32 {
@@ -160,7 +135,6 @@ func (b *Parameters) Connect() error {
 	b.servers = make([]net.Conn, b.n)
 	b.readers = make([]*bufio.Reader, b.n)
 	b.writers = make([]*bufio.Writer, b.n)
-	b.repChan = make(chan *fastRep, b.n)
 
 	// get list of nodes to connect to
 	var toConnect []int
@@ -171,6 +145,7 @@ func (b *Parameters) Connect() error {
 			}
 		}
 	} else {
+		toConnect = append(toConnect, b.closestReplica)
 		if !b.leaderless {
 			b.logger.Printf("Getting leader from master...\n")
 			var replyL *masterproto.GetLeaderReply
@@ -194,11 +169,6 @@ func (b *Parameters) Connect() error {
 			}
 			b.logger.Printf("The Leader is replica %d\n", b.Leader)
 		}
-		if b.isAlmostFast {
-			toConnect = append(toConnect, b.collocatedId)
-		} else {
-			toConnect = append(toConnect, b.closestReplica)
-		}
 	}
 
 	for _, i := range toConnect {
@@ -206,20 +176,6 @@ func (b *Parameters) Connect() error {
 		b.servers[i] = Dial(b.replicaLists[i], false, b.logger)
 		b.readers[i] = bufio.NewReader(b.servers[i])
 		b.writers[i] = bufio.NewWriter(b.servers[i])
-		/*if b.isFast || b.isAlmostFast {
-			go func(delay time.Duration, rep int) {
-				reply := new(genericsmrproto.ProposeReplyTS)
-				for {
-					reply.Unmarshal(b.readers[rep])
-					time.Sleep(delay)
-					b.repChan <- &fastRep{
-						rep: reply,
-						id:  rep,
-					}
-					// TODO handle errors
-				}
-			}(IdLatency[i], i)
-		}*/
 	}
 
 	b.logger.Println("Connected")
@@ -248,12 +204,12 @@ func Dial(addr string, connect bool, logger *log.Logger) net.Conn {
 			}
 		}
 
+		// if not done yet, try again
+		logger.Println("Connection error with ", addr, ": ", err)
+		if conn != nil {
+			conn.Close()
+		}
 		if try == 2 {
-			// if not done yet, try again
-			logger.Println("Connection error with ", addr, ": ", err)
-			if conn != nil {
-				conn.Close()
-			}
 			logger.Fatal("Will not try anymore")
 		}
 	}
@@ -291,20 +247,6 @@ func Call(cli *rpc.Client, method string,
 	}
 }
 
-func (p *Parameters) getDelay(addr string) time.Duration {
-	d, exists := p.addrLatency[addr]
-	if exists {
-		return d
-	}
-
-	if addr != p.collocatedWith {
-		return p.latency
-	}
-
-	d, _ = time.ParseDuration("0ms")
-	return d
-}
-
 func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply) error {
 	// save replica list and closest
 	b.replicaLists = replyRL.ReplicaList
@@ -322,9 +264,7 @@ func (b *Parameters) FindClosestReplica(replyRL *masterproto.GetReplicaListReply
 			addr = "127.0.0.1"
 		}
 
-		b.idLatency[i] = b.getDelay(addr)
-
-		if addr == b.collocatedWith /*|| b.idLatency[i] == time.Duration(0)*/ {
+		if addr == b.collocatedWith {
 			found = true
 			b.collocatedId = i
 			b.closestReplica = i
@@ -431,7 +371,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 
 	for err != nil {
 
-		if !b.isFast && !b.isAlmostFast {
+		if !b.isFast {
 			b.writers[submitter].WriteByte(genericsmrproto.PROPOSE)
 			args.Marshal(b.writers[submitter])
 			b.writers[submitter].Flush()
@@ -440,12 +380,7 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 			}
 		} else {
 			if b.verbose {
-				if b.isFast {
-					b.logger.Println("Sent to everyone", args.CommandId)
-				} else {
-					b.logger.Println("Sned to leader and collocated server",
-						args.CommandId)
-				}
+				b.logger.Println("Sent to everyone", args.CommandId)
 			}
 			for rep := 0; rep < b.n; rep++ {
 				if b.writers[rep] != nil {
@@ -456,9 +391,8 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 			}
 		}
 
-		if b.isFast || b.isAlmostFast {
+		if b.isFast {
 			value, err = b.waitReplies(b.collocatedId, args.CommandId)
-			//value, err = b.fastWaitReplies(args.CommandId)
 		} else {
 			value, err = b.waitReplies(submitter, args.CommandId)
 		}
@@ -490,21 +424,6 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 	return value
 }
 
-func (b *Parameters) fastWaitReplies(cmdId int32) (state.Value, error) {
-	for {
-		fr := <-b.repChan
-		if fr.rep.CommandId == cmdId {
-			if fr.rep.OK == TRUE {
-				return fr.rep.Value, nil
-			} else {
-				return state.NIL(), errors.New("Failed to receive a response.")
-			}
-		}
-	}
-
-	return nil, nil
-}
-
 func (b *Parameters) waitReplies(submitter int,
 	cmdId int32) (state.Value, error) {
 	var err error
@@ -526,6 +445,5 @@ func (b *Parameters) waitReplies(submitter int,
 		}
 	}
 
-	time.Sleep(b.idLatency[submitter])
 	return ret, err
 }

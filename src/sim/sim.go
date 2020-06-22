@@ -1,4 +1,4 @@
-package yagpaxos
+package sim
 
 import (
 	"fastrpc"
@@ -8,49 +8,62 @@ import (
 	"math/rand"
 	"state"
 	"time"
+	y "yagpaxos"
 )
 
-type ReplicaSim struct {
+type Replica struct {
 	*genericsmr.Replica
 
 	ballot   int32
 	conflict int
-	cmdDescs map[CommandId]*commandDescSim
+	cmdDescs map[y.CommandId]*commandDescSim
 
-	sender  Sender
+	sender  y.Sender
 
-	AQ Quorum
-	qs QuorumSet
+	AQ y.Quorum
+	qs y.QuorumSet
 	cs CommunicationSupply
 }
 
 type commandDescSim struct {
 	propose  *genericsmr.Propose
 	slowPath bool
-	dep      Dep
+	dep      y.Dep
 
-	fastAndSlowAcks *MsgSet
-	afterPropagate  *OptCondF
+	fastAndSlowAcks *y.MsgSet
+	afterPropagate  *y.OptCondF
+}
+
+type CommunicationSupply struct {
+	maxLatency time.Duration
+
+	fastAckChan      chan fastrpc.Serializable
+	slowAckChan      chan fastrpc.Serializable
+	lightSlowAckChan chan fastrpc.Serializable
+
+	fastAckRPC      uint8
+	slowAckRPC      uint8
+	lightSlowAckRPC uint8
 }
 
 var (
-	goodDep = Dep{}
-	badDep  = Dep{CommandId{
+	goodDep = y.Dep{}
+	badDep  = y.Dep{y.CommandId{
 		ClientId: 42,
 		SeqNum:   42,
 	}}
 )
 
-func NewReplicaSim(id int, addrs []string, f int, qfile string, conflict int) *ReplicaSim {
+func NewReplica(id int, addrs []string, f int, qfile string, conflict int) *Replica {
 
 	rand.Seed(time.Now().UnixNano())
 
-	r := &ReplicaSim{
+	r := &Replica{
 		Replica: genericsmr.NewReplica(id, addrs, false, false, false, false, f),
 
 		ballot:   0,
 		conflict: conflict,
-		cmdDescs: make(map[CommandId]*commandDescSim),
+		cmdDescs: make(map[y.CommandId]*commandDescSim),
 
 		cs: CommunicationSupply{
 			maxLatency: 0,
@@ -64,32 +77,32 @@ func NewReplicaSim(id int, addrs []string, f int, qfile string, conflict int) *R
 		},
 	}
 
-	r.sender = NewSender(r.Replica)
-	r.qs = NewQuorumSet(r.N/2+1, r.N)
+	r.sender = y.NewSender(r.Replica)
+	r.qs = y.NewQuorumSet(r.N/2+1, r.N)
 
-	AQ, leaderId, err := NewQuorumFromFile(qfile, r.Replica)
+	AQ, leaderId, err := y.NewQuorumFromFile(qfile, r.Replica)
 	if err == nil {
 		r.AQ = AQ
 		r.ballot = leaderId
-	} else if err == NO_QUORUM_FILE {
+	} else if err == y.NO_QUORUM_FILE {
 		r.AQ = r.qs.AQ(r.ballot)
 	} else {
 		log.Fatal(err)
 	}
 
 	r.cs.fastAckRPC =
-		r.RegisterRPC(new(MFastAck), r.cs.fastAckChan)
+		r.RegisterRPC(new(y.MFastAck), r.cs.fastAckChan)
 	r.cs.slowAckRPC =
-		r.RegisterRPC(new(MSlowAck), r.cs.slowAckChan)
+		r.RegisterRPC(new(y.MSlowAck), r.cs.slowAckChan)
 	r.cs.lightSlowAckRPC =
-		r.RegisterRPC(new(MLightSlowAck), r.cs.lightSlowAckChan)
+		r.RegisterRPC(new(y.MLightSlowAck), r.cs.lightSlowAckChan)
 
 	go r.run()
 
 	return r
 }
 
-func (r *ReplicaSim) run() {
+func (r *Replica) run() {
 	r.ConnectToPeers()
 	latencies := r.ComputeClosestPeers()
 	for _, l := range latencies {
@@ -104,24 +117,24 @@ func (r *ReplicaSim) run() {
 	for !r.Shutdown {
 		select {
 		case propose := <-r.ProposeChan:
-			r.handlePropose(propose, r.getCmdDesc(CommandId{
+			r.handlePropose(propose, r.getCmdDesc(y.CommandId{
 				ClientId: propose.ClientId,
 				SeqNum:   propose.CommandId,
 			}))
 		case m := <-r.cs.fastAckChan:
-			fastAck := m.(*MFastAck)
+			fastAck := m.(*y.MFastAck)
 			r.handleFastAck(fastAck, r.getCmdDesc(fastAck.CmdId))
 		case m := <-r.cs.slowAckChan:
-			slowAck := m.(*MSlowAck)
+			slowAck := m.(*y.MSlowAck)
 			r.handleSlowAck(slowAck, r.getCmdDesc(slowAck.CmdId))
 		case m := <-r.cs.lightSlowAckChan:
-			lightSlowAck := m.(*MLightSlowAck)
+			lightSlowAck := m.(*y.MLightSlowAck)
 			r.handleLightSlowAck(lightSlowAck, r.getCmdDesc(lightSlowAck.CmdId))
 		}
 	}
 }
 
-func (r *ReplicaSim) handlePropose(p *genericsmr.Propose, desc *commandDescSim) {
+func (r *Replica) handlePropose(p *genericsmr.Propose, desc *commandDescSim) {
 	desc.propose = p
 	if !r.AQ.Contains(r.Id) {
 		desc.afterPropagate.Recall()
@@ -130,7 +143,7 @@ func (r *ReplicaSim) handlePropose(p *genericsmr.Propose, desc *commandDescSim) 
 	if desc.afterPropagate.Recall() && desc.slowPath {
 		return
 	}
-	dep := func() Dep {
+	dep := func() y.Dep {
 		if r.conflict == 0 || r.Id == leader(r.ballot, r.N) {
 			return goodDep
 		} else if r.conflict >= 100 {
@@ -142,7 +155,7 @@ func (r *ReplicaSim) handlePropose(p *genericsmr.Propose, desc *commandDescSim) 
 		return badDep
 	}()
 	desc.dep = dep
-	fastAck := &MFastAck{
+	fastAck := &y.MFastAck{
 		Replica: r.Id,
 		Dep:     dep,
 	}
@@ -150,7 +163,7 @@ func (r *ReplicaSim) handlePropose(p *genericsmr.Propose, desc *commandDescSim) 
 	r.handleFastAck(fastAck, desc)
 }
 
-func (r *ReplicaSim) handleFastAck(fastAck *MFastAck, desc *commandDescSim) {
+func (r *Replica) handleFastAck(fastAck *y.MFastAck, desc *commandDescSim) {
 	if fastAck.Replica != leader(r.ballot, r.N) {
 		r.commonCaseFastAck(fastAck, desc)
 		return
@@ -167,7 +180,7 @@ func (r *ReplicaSim) handleFastAck(fastAck *MFastAck, desc *commandDescSim) {
 			desc.fastAndSlowAcks.Add(fastAck.Replica, true, fastAck)
 			desc.dep = fastAck.Dep
 			desc.slowPath = true
-			lightSlowAck := &MLightSlowAck{
+			lightSlowAck := &y.MLightSlowAck{
 				Replica: r.Id,
 			}
 			r.sender.SendToAll(lightSlowAck, r.cs.lightSlowAckRPC)
@@ -178,22 +191,22 @@ func (r *ReplicaSim) handleFastAck(fastAck *MFastAck, desc *commandDescSim) {
 	})
 }
 
-func (r *ReplicaSim) commonCaseFastAck(fastAck *MFastAck, desc *commandDescSim) {
+func (r *Replica) commonCaseFastAck(fastAck *y.MFastAck, desc *commandDescSim) {
 	desc.fastAndSlowAcks.Add(fastAck.Replica, false, fastAck)
 }
 
-func (r *ReplicaSim) handleSlowAck(slowAck *MSlowAck, desc *commandDescSim) {
-	r.commonCaseFastAck((*MFastAck)(slowAck), desc)
+func (r *Replica) handleSlowAck(slowAck *y.MSlowAck, desc *commandDescSim) {
+	r.commonCaseFastAck((*y.MFastAck)(slowAck), desc)
 }
 
-func (r *ReplicaSim) handleLightSlowAck(lightSlowAck *MLightSlowAck, desc *commandDescSim) {
-	r.commonCaseFastAck(&MFastAck{
+func (r *Replica) handleLightSlowAck(lightSlowAck *y.MLightSlowAck, desc *commandDescSim) {
+	r.commonCaseFastAck(&y.MFastAck{
 		Replica: lightSlowAck.Replica,
 		Dep:     nil,
 	}, desc)
 }
 
-func (r *ReplicaSim) getCmdDesc(cmdId CommandId) *commandDescSim {
+func (r *Replica) getCmdDesc(cmdId y.CommandId) *commandDescSim {
 	desc, exists := r.cmdDescs[cmdId]
 	if exists {
 		return desc
@@ -203,11 +216,11 @@ func (r *ReplicaSim) getCmdDesc(cmdId CommandId) *commandDescSim {
 		slowPath: false,
 	}
 
-	acc := func(msg interface{}) bool {
-		if desc.fastAndSlowAcks.leaderMsg == nil {
+	acc := func(msg, leaderMsg interface{}) bool {
+		if leaderMsg == nil {
 			return true
 		}
-		return msg.(*MFastAck).Dep == nil || goodDep.Equals(msg.(*MFastAck).Dep)
+		return msg.(*y.MFastAck).Dep == nil || goodDep.Equals(msg.(*y.MFastAck).Dep)
 	}
 
 	free := func(_ interface{}) {}
@@ -216,7 +229,7 @@ func (r *ReplicaSim) getCmdDesc(cmdId CommandId) *commandDescSim {
 		if leaderMsg == nil {
 			return
 		}
-		dCmdId := leaderMsg.(*MFastAck).CmdId
+		dCmdId := leaderMsg.(*y.MFastAck).CmdId
 		dDesc := r.getCmdDesc(dCmdId)
 		if dDesc.propose.Collocated {
 			rep := &genericsmrproto.ProposeReplyTS{
@@ -229,11 +242,15 @@ func (r *ReplicaSim) getCmdDesc(cmdId CommandId) *commandDescSim {
 		}
 	}
 
-	desc.fastAndSlowAcks = NewMsgSet(r.AQ, acc, free, fastAndSlowHandler)
-	desc.afterPropagate = NewOptCondF(func() bool {
+	desc.fastAndSlowAcks = y.NewMsgSet(r.AQ, acc, free, fastAndSlowHandler)
+	desc.afterPropagate = y.NewOptCondF(func() bool {
 		return desc.propose != nil
 	})
 
 	r.cmdDescs[cmdId] = desc
 	return desc
+}
+
+func leader(ballot int32, repNum int) int32 {
+	return ballot % int32(repNum)
 }

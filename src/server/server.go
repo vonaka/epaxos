@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"paxos"
 	"runtime/pprof"
+	"sim"
 	"syscall"
 	"time"
 	"yagpaxos"
@@ -119,7 +120,7 @@ func main() {
 	} else if *simYagpaxos {
 		log.Println("Starting Yet Another Generalized Paxos replica...")
 		yagpaxos.MaxDescRoutines = *descNum
-		rep := yagpaxos.NewReplicaSim(replicaId, nodeList, *maxfailures, *qfile, *conf)
+		rep := sim.NewReplica(replicaId, nodeList, *maxfailures, *qfile, *conf)
 		rpc.Register(rep)
 	} else if *doOptpaxos {
 		log.Println("Starting optimized Paxos replica...")

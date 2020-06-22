@@ -566,11 +566,11 @@ func (r *Replica) newDesc() *commandDesc {
 		return desc.propose != nil
 	})
 
-	acceptFastAndSlowAck := func(msg interface{}) bool {
-		if desc.fastAndSlowAcks.leaderMsg == nil {
+	acceptFastAndSlowAck := func(msg, leaderMsg interface{}) bool {
+		if leaderMsg == nil {
 			return true
 		}
-		leaderFastAck := desc.fastAndSlowAcks.leaderMsg.(*MFastAck)
+		leaderFastAck := leaderMsg.(*MFastAck)
 		fastAck := msg.(*MFastAck)
 		return fastAck.Dep == nil ||
 			(Dep(leaderFastAck.Dep)).Equals(fastAck.Dep)

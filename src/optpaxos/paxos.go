@@ -373,7 +373,7 @@ func (r *Replica) getCmdDesc(slot int, msg interface{}) *commandDesc {
 				return desc.cmdId.SeqNum != -1
 			})
 
-			desc.twoBs = yagpaxos.NewMsgSet(r.AQ, func(msg interface{}) bool {
+			desc.twoBs = yagpaxos.NewMsgSet(r.AQ, func(_, _ interface{}) bool {
 				return true
 			}, func(msg interface{}) {}, get2BsHandler(r, desc))
 

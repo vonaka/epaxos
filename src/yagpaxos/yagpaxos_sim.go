@@ -168,6 +168,7 @@ func (r *ReplicaSim) handleFastAck(fastAck *MFastAck, desc *commandDescSim) {
 		if !desc.dep.Equals(fastAck.Dep) {
 			desc.fastAndSlowAcks.Add(fastAck.Replica, true, fastAck)
 			desc.dep = fastAck.Dep
+			desc.slowPath = true
 			lightSlowAck := &MLightSlowAck{
 				Replica: r.Id,
 			}

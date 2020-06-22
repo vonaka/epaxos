@@ -156,6 +156,10 @@ func (r *Replica) handlePropose(p *genericsmr.Propose, desc *commandDescSim) {
 	}()
 	desc.dep = dep
 	fastAck := &y.MFastAck{
+		CmdId: y.CommandId{
+			ClientId: p.ClientId,
+			SeqNum:   p.CommandId,
+		},
 		Replica: r.Id,
 		Dep:     dep,
 	}
@@ -181,6 +185,7 @@ func (r *Replica) handleFastAck(fastAck *y.MFastAck, desc *commandDescSim) {
 			desc.dep = fastAck.Dep
 			desc.slowPath = true
 			lightSlowAck := &y.MLightSlowAck{
+				CmdId:   fastAck.CmdId,
 				Replica: r.Id,
 			}
 			r.sender.SendToAll(lightSlowAck, r.cs.lightSlowAckRPC)
@@ -201,6 +206,7 @@ func (r *Replica) handleSlowAck(slowAck *y.MSlowAck, desc *commandDescSim) {
 
 func (r *Replica) handleLightSlowAck(lightSlowAck *y.MLightSlowAck, desc *commandDescSim) {
 	r.commonCaseFastAck(&y.MFastAck{
+		CmdId:   lightSlowAck.CmdId,
 		Replica: lightSlowAck.Replica,
 		Dep:     nil,
 	}, desc)

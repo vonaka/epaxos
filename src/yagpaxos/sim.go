@@ -91,8 +91,6 @@ func NewReplicaSim(id int, addrs []string, f int, qfile string, conflict int) *R
 
 func (r *ReplicaSim) run() {
 	r.ConnectToPeers()
-
-	r.ConnectToPeers()
 	latencies := r.ComputeClosestPeers()
 	for _, l := range latencies {
 		d := time.Duration(l*1000*1000) * time.Nanosecond

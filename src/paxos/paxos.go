@@ -510,7 +510,6 @@ func (r *Replica) handleAccept(accept *paxosproto.Accept) {
 		r.sync()
 	}
 
-	// TODO: send to all
 	areply := &paxosproto.AcceptReply{accept.Instance, inst.bal}
 	r.replyAccept(accept.LeaderId, areply)
 }

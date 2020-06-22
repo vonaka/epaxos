@@ -98,6 +98,8 @@ type CommunicationSupply struct {
 func NewReplica(replicaId int, peerAddrs []string,
 	thrifty, exec, lread, dreply, usePool bool, failures int, qfile string) *Replica {
 
+	cmap.SHARD_COUNT = 32768
+
 	r := &Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
 			thrifty, exec, lread, dreply, failures),

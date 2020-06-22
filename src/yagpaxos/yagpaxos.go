@@ -95,14 +95,14 @@ type CommunicationSupply struct {
 	collectRPC      uint8
 }
 
-func NewReplica(replicaId int, peerAddrs []string,
-	thrifty, exec, lread, dreply, usePool bool, failures int, qfile string) *Replica {
+func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
+	failures int, qfile string) *Replica {
 
 	cmap.SHARD_COUNT = 32768
 
 	r := &Replica{
 		Replica: genericsmr.NewReplica(replicaId, peerAddrs,
-			thrifty, exec, lread, dreply, failures),
+			false, exec, false, dreply, failures),
 
 		ballot:  0,
 		cballot: 0,
@@ -149,7 +149,7 @@ func NewReplica(replicaId int, peerAddrs []string,
 	}
 
 	r.sender = NewSender(r.Replica)
-	r.repchan = NewReplyChan(r)
+	r.repchan = NewReplyChan(r.Replica)
 	r.qs = NewQuorumSet(r.N/2+1, r.N)
 
 	AQ, leaderId, err := NewQuorumFromFile(qfile, r.Replica)

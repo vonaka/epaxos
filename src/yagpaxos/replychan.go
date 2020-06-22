@@ -18,7 +18,7 @@ type replyChan struct {
 	rep  *genericsmrproto.ProposeReplyTS
 }
 
-func NewReplyChan(r *Replica) *replyChan {
+func NewReplyChan(r *genericsmr.Replica) *replyChan {
 	rc := &replyChan{
 		args: make(chan *replyArgs, 128),
 		rep: &genericsmrproto.ProposeReplyTS{

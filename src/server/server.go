@@ -111,8 +111,8 @@ func main() {
 	} else if *doYagpaxos {
 		log.Println("Starting Yet Another Generalized Paxos replica...")
 		yagpaxos.MaxDescRoutines = *descNum
-		rep := yagpaxos.NewReplica(replicaId, nodeList, *thrifty, *exec,
-			*lread, *dreply, *usePool, *maxfailures, *qfile)
+		rep := yagpaxos.NewReplica(replicaId, nodeList, *exec, *dreply,
+			*usePool, *maxfailures, *qfile)
 		rpc.Register(rep)
 	} else if *doOptpaxos {
 		log.Println("Starting optimized Paxos replica...")

@@ -31,6 +31,7 @@ var doMencius *bool = flag.Bool("m", false, "Use Mencius as the replication prot
 var doGpaxos *bool = flag.Bool("g", false, "Use Generalized Paxos as the replication protocol. Defaults to false.")
 var doEpaxos *bool = flag.Bool("e", false, "Use EPaxos as the replication protocol. Defaults to false.")
 var doYagpaxos *bool = flag.Bool("y", false, "Use Yet Another GPaxos as the replication protocol. Defaults to false.")
+var simYagpaxos *bool = flag.Bool("sy", false, "Simulate Yet Another GPaxos as the replication protocol. Defaults to false.")
 var doOptpaxos *bool = flag.Bool("optpaxos", false, "Use optimized Paxos as the replication protocol. Defaults to false.")
 var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
 var thrifty = flag.Bool("thrifty", false, "Use only as many messages as strictly required for inter-replica communication.")
@@ -46,6 +47,7 @@ var proxy = flag.String("proxy", "NONE", "List of proxy IPs for this server")
 var qfile *string = flag.String("qfile", "", "Quorum config file (for yagpaxos only).")
 var descNum *int = flag.Int("desc", 100, "Number of command descriptors (only for yagpaxos and optpaxos).")
 var usePool *bool = flag.Bool("pool", true, "Use pools for internal allocations (only for yagpaxos andd optpaxos).")
+var conf *int = flag.Int("conflict", 100, "Conflict rate (used in simulations).")
 
 func initProxy(proxy string) {
 	if proxy == "NONE" {
@@ -113,6 +115,11 @@ func main() {
 		yagpaxos.MaxDescRoutines = *descNum
 		rep := yagpaxos.NewReplica(replicaId, nodeList, *exec, *dreply,
 			*usePool, *maxfailures, *qfile)
+		rpc.Register(rep)
+	} else if *simYagpaxos {
+		log.Println("Starting Yet Another Generalized Paxos replica...")
+		yagpaxos.MaxDescRoutines = *descNum
+		rep := yagpaxos.NewReplicaSim(replicaId, nodeList, *maxfailures, *qfile, *conf)
 		rpc.Register(rep)
 	} else if *doOptpaxos {
 		log.Println("Starting optimized Paxos replica...")

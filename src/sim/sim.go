@@ -26,9 +26,10 @@ type Replica struct {
 }
 
 type commandDescSim struct {
-	propose  *genericsmr.Propose
-	slowPath bool
-	dep      y.Dep
+	propose   *genericsmr.Propose
+	slowPath  bool
+	dep       y.Dep
+	delivered bool
 
 	fastAndSlowAcks *y.MsgSet
 	afterPropagate  *y.OptCondF
@@ -47,7 +48,10 @@ type CommunicationSupply struct {
 }
 
 var (
-	goodDep = y.Dep{}
+	goodDep = y.Dep{y.CommandId{
+		ClientId: 24,
+		SeqNum:   24,
+	}}
 	badDep  = y.Dep{y.CommandId{
 		ClientId: 42,
 		SeqNum:   42,
@@ -218,8 +222,9 @@ func (r *Replica) getCmdDesc(cmdId y.CommandId) *commandDescSim {
 		return desc
 	}
 	desc = &commandDescSim{
-		propose:  nil,
-		slowPath: false,
+		propose:   nil,
+		slowPath:  false,
+		delivered: false,
 	}
 
 	acc := func(msg, leaderMsg interface{}) bool {
@@ -237,11 +242,12 @@ func (r *Replica) getCmdDesc(cmdId y.CommandId) *commandDescSim {
 		}
 		dCmdId := leaderMsg.(*y.MFastAck).CmdId
 		dDesc := r.getCmdDesc(dCmdId)
-		if dDesc.propose.Collocated {
+		if !dDesc.delivered && dDesc.propose.Collocated {
+			dDesc.delivered = true
 			rep := &genericsmrproto.ProposeReplyTS{
-				OK: genericsmr.TRUE,
+				OK:        genericsmr.TRUE,
 				CommandId: dDesc.propose.CommandId,
-				Value: state.NIL(),
+				Value:     state.NIL(),
 				Timestamp: dDesc.propose.Timestamp,
 			}
 			r.ReplyProposeTS(rep, dDesc.propose.Reply, dDesc.propose.Mutex)

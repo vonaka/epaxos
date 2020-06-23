@@ -391,6 +391,7 @@ func (r *Replica) handlePropose(propose *genericsmr.Propose) {
 	proposals := make([]*genericsmr.Propose, batchSize)
 	cmds := make([]state.Command, batchSize)
 	proposals[0] = propose
+	cmds[0] = propose.Command
 	for i := 1; i < batchSize; i++ {
 		prop := <-r.ProposeChan
 		proposals[i] = prop

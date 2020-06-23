@@ -24,6 +24,7 @@ type Replica struct {
 	delivered cmap.ConcurrentMap
 
 	sender  Sender
+	batcher *Batcher
 	repchan *replyChan
 	history []commandStaticDesc
 	keys    map[state.Key]keyInfo
@@ -77,6 +78,7 @@ type CommunicationSupply struct {
 	fastAckChan      chan fastrpc.Serializable
 	slowAckChan      chan fastrpc.Serializable
 	lightSlowAckChan chan fastrpc.Serializable
+	acksChan         chan fastrpc.Serializable
 	newLeaderChan    chan fastrpc.Serializable
 	newLeaderAckChan chan fastrpc.Serializable
 	syncChan         chan fastrpc.Serializable
@@ -87,6 +89,7 @@ type CommunicationSupply struct {
 	fastAckRPC      uint8
 	slowAckRPC      uint8
 	lightSlowAckRPC uint8
+	acksRPC         uint8
 	newLeaderRPC    uint8
 	newLeaderAckRPC uint8
 	syncRPC         uint8
@@ -122,6 +125,8 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
 				genericsmr.CHAN_BUFFER_SIZE),
 			lightSlowAckChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
+			acksChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
 			newLeaderChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 			newLeaderAckChan: make(chan fastrpc.Serializable,
@@ -149,6 +154,9 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
 	}
 
 	r.sender = NewSender(r.Replica)
+	r.batcher = NewBatcher(r, genericsmr.CHAN_BUFFER_SIZE, func(f *MFastAck) {
+		fastAckPool.Put(f)
+	}, func(_ *MLightSlowAck){})
 	r.repchan = NewReplyChan(r.Replica)
 	r.qs = NewQuorumSet(r.N/2+1, r.N)
 
@@ -169,6 +177,8 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
 		r.RegisterRPC(new(MSlowAck), r.cs.slowAckChan)
 	r.cs.lightSlowAckRPC =
 		r.RegisterRPC(new(MLightSlowAck), r.cs.lightSlowAckChan)
+	r.cs.acksRPC =
+		r.RegisterRPC(new(MAcks), r.cs.acksChan)
 	r.cs.newLeaderRPC =
 		r.RegisterRPC(new(MNewLeader), r.cs.newLeaderChan)
 	r.cs.newLeaderAckRPC =
@@ -248,6 +258,15 @@ func (r *Replica) run() {
 			lightSlowAck := m.(*MLightSlowAck)
 			r.getCmdDesc(lightSlowAck.CmdId, lightSlowAck, nil)
 
+		case m := <-r.cs.acksChan:
+			acks := m.(*MAcks)
+			for _, f := range acks.FastAcks {
+				r.getCmdDesc(f.CmdId, copyFastAck(&f), nil)
+			}
+			for _, s := range acks.LightSlowAcks {
+				r.getCmdDesc(s.CmdId, &s, nil)
+			}
+
 		case m := <-r.cs.newLeaderChan:
 			newLeader := m.(*MNewLeader)
 			r.handleNewLeader(newLeader)
@@ -306,9 +325,7 @@ func (r *Replica) handlePropose(msg *genericsmr.Propose,
 	fastAck.Dep = desc.dep
 
 	fastAckSend := copyFastAck(fastAck)
-	r.sender.SendToAllAndFree(fastAckSend, r.cs.fastAckRPC, func() {
-		fastAckPool.Put(fastAckSend)
-	})
+	r.batcher.SendFastAck(fastAckSend)
 
 	r.handleFastAck(fastAck, desc)
 }
@@ -378,7 +395,7 @@ func (r *Replica) fastAckFromLeader(msg *MFastAck, desc *commandDesc) {
 				CmdId:   msgCmdId,
 			}
 
-			r.sender.SendToAll(lightSlowAck, r.cs.lightSlowAckRPC)
+			r.batcher.SendLightSlowAck(lightSlowAck)
 			r.handleLightSlowAck(lightSlowAck, desc)
 		}
 	})

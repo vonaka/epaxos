@@ -20,7 +20,7 @@ type replyChan struct {
 
 func NewReplyChan(r *genericsmr.Replica) *replyChan {
 	rc := &replyChan{
-		args: make(chan *replyArgs, 128),
+		args: make(chan *replyArgs, genericsmr.CHAN_BUFFER_SIZE),
 		rep: &genericsmrproto.ProposeReplyTS{
 			OK: genericsmr.TRUE,
 		},

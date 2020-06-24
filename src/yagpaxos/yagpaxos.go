@@ -264,7 +264,8 @@ func (r *Replica) run() {
 				r.getCmdDesc(f.CmdId, copyFastAck(&f), nil)
 			}
 			for _, s := range acks.LightSlowAcks {
-				r.getCmdDesc(s.CmdId, &s, nil)
+				ls := s
+				r.getCmdDesc(s.CmdId, &ls, nil)
 			}
 
 		case m := <-r.cs.newLeaderChan:

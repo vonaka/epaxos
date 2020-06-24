@@ -154,7 +154,7 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
 	}
 
 	r.sender = NewSender(r.Replica)
-	r.batcher = NewBatcher(r, genericsmr.CHAN_BUFFER_SIZE, func(f *MFastAck) {
+	r.batcher = NewBatcher(r, 16, func(f *MFastAck) {
 		fastAckPool.Put(f)
 	}, func(_ *MLightSlowAck){})
 	r.repchan = NewReplyChan(r.Replica)

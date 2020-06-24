@@ -13,14 +13,15 @@ func NewBatcher(r *Replica, size int,
 	}
 
 	go func() {
-		var acks MAcks
 		for !r.Shutdown {
 			select {
 			case fastAck := <-b.fastAcks:
 				fLen := len(b.fastAcks) + 1
 				sLen := len(b.lightSlowAcks)
-				acks.FastAcks = make([]MFastAck, fLen)
-				acks.LightSlowAcks = make([]MLightSlowAck, sLen)
+				acks := &MAcks{
+					FastAcks:      make([]MFastAck, fLen),
+					LightSlowAcks: make([]MLightSlowAck, sLen),
+				}
 
 				acks.FastAcks[0] = *fastAck
 				freeFastAck(fastAck)
@@ -34,12 +35,15 @@ func NewBatcher(r *Replica, size int,
 					acks.LightSlowAcks[i] = *s
 					freeSlowAck(s)
 				}
+				r.sender.SendToAll(acks, r.cs.acksRPC)
 
 			case slowAck := <-b.lightSlowAcks:
 				fLen := len(b.fastAcks)
 				sLen := len(b.lightSlowAcks) + 1
-				acks.FastAcks = make([]MFastAck, fLen)
-				acks.LightSlowAcks = make([]MLightSlowAck, sLen)
+				acks := &MAcks{
+					FastAcks:      make([]MFastAck, fLen),
+					LightSlowAcks: make([]MLightSlowAck, sLen),
+				}
 
 				for i := 0; i < fLen; i++ {
 					f := <-b.fastAcks
@@ -53,8 +57,8 @@ func NewBatcher(r *Replica, size int,
 					acks.LightSlowAcks[i] = *s
 					freeSlowAck(s)
 				}
+				r.sender.SendToAll(acks, r.cs.acksRPC)
 			}
-			r.sender.SendToAll(&acks, r.cs.acksRPC)
 		}
 	}()
 

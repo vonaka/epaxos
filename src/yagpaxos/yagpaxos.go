@@ -79,6 +79,7 @@ type CommunicationSupply struct {
 	slowAckChan      chan fastrpc.Serializable
 	lightSlowAckChan chan fastrpc.Serializable
 	acksChan         chan fastrpc.Serializable
+	optAcksChan      chan fastrpc.Serializable
 	newLeaderChan    chan fastrpc.Serializable
 	newLeaderAckChan chan fastrpc.Serializable
 	syncChan         chan fastrpc.Serializable
@@ -90,6 +91,7 @@ type CommunicationSupply struct {
 	slowAckRPC      uint8
 	lightSlowAckRPC uint8
 	acksRPC         uint8
+	optAcksRPC      uint8
 	newLeaderRPC    uint8
 	newLeaderAckRPC uint8
 	syncRPC         uint8
@@ -126,6 +128,8 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
 			lightSlowAckChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 			acksChan: make(chan fastrpc.Serializable,
+				genericsmr.CHAN_BUFFER_SIZE),
+			optAcksChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
 			newLeaderChan: make(chan fastrpc.Serializable,
 				genericsmr.CHAN_BUFFER_SIZE),
@@ -179,6 +183,8 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
 		r.RegisterRPC(new(MLightSlowAck), r.cs.lightSlowAckChan)
 	r.cs.acksRPC =
 		r.RegisterRPC(new(MAcks), r.cs.acksChan)
+	r.cs.optAcksRPC =
+		r.RegisterRPC(new(MOptAcks), r.cs.optAcksChan)
 	r.cs.newLeaderRPC =
 		r.RegisterRPC(new(MNewLeader), r.cs.newLeaderChan)
 	r.cs.newLeaderAckRPC =
@@ -266,6 +272,17 @@ func (r *Replica) run() {
 			for _, s := range acks.LightSlowAcks {
 				ls := s
 				r.getCmdDesc(s.CmdId, &ls, nil)
+			}
+
+		case m := <-r.cs.optAcksChan:
+			optAcks := m.(*MOptAcks)
+			for _, ack := range optAcks.Acks {
+				fastAck := newFastAck()
+				fastAck.Replica = optAcks.Replica
+				fastAck.Ballot = optAcks.Ballot
+				fastAck.CmdId = ack.CmdId
+				fastAck.Dep = ack.Dep
+				r.getCmdDesc(fastAck.CmdId, fastAck, nil)
 			}
 
 		case m := <-r.cs.newLeaderChan:

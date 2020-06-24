@@ -23,19 +23,60 @@ func NewBatcher(r *Replica, size int,
 					LightSlowAcks: make([]MLightSlowAck, sLen),
 				}
 
+				ballot := fastAck.Ballot
+				optAcks := &MOptAcks{
+					Replica: r.Id,
+					Ballot:  fastAck.Ballot,
+					Acks:    []Ack{Ack{
+						CmdId: fastAck.CmdId,
+						Dep:   fastAck.Dep,
+					}},
+				}
+				is := map[CommandId]int{fastAck.CmdId: 0}
+
 				acks.FastAcks[0] = *fastAck
 				freeFastAck(fastAck)
 				for i := 1; i < fLen; i++ {
 					f := <-b.fastAcks
 					acks.FastAcks[i] = *f
+
+					if ballot == f.Ballot {
+						is[f.CmdId] = len(optAcks.Acks)
+						optAcks.Acks = append(optAcks.Acks, Ack{
+							CmdId: f.CmdId,
+							Dep:   f.Dep,
+						})
+					} else {
+						ballot = -1
+					}
 					freeFastAck(f)
 				}
 				for i := 0; i < sLen; i++ {
 					s := <-b.lightSlowAcks
 					acks.LightSlowAcks[i] = *s
+
+					if ballot == s.Ballot {
+						iCmdId, exists := is[s.CmdId]
+						if exists {
+							optAcks.Acks[iCmdId].Dep = nil
+						} else {
+							is[s.CmdId] = len(optAcks.Acks)
+							optAcks.Acks = append(optAcks.Acks, Ack{
+								CmdId: s.CmdId,
+								Dep:   nil,
+							})
+						}
+					} else {
+						ballot = -1
+					}
 					freeSlowAck(s)
 				}
-				r.sender.SendToAll(acks, r.cs.acksRPC)
+
+				if ballot != -1 {
+					r.sender.SendToAll(optAcks, r.cs.optAcksRPC)
+				} else {
+					r.sender.SendToAll(acks, r.cs.acksRPC)
+				}
 
 			case slowAck := <-b.lightSlowAcks:
 				fLen := len(b.fastAcks)
@@ -45,19 +86,58 @@ func NewBatcher(r *Replica, size int,
 					LightSlowAcks: make([]MLightSlowAck, sLen),
 				}
 
-				for i := 0; i < fLen; i++ {
-					f := <-b.fastAcks
-					acks.FastAcks[i] = *f
-					freeFastAck(f)
+				ballot := slowAck.Ballot
+				optAcks := &MOptAcks{
+					Replica: r.Id,
+					Ballot:  slowAck.Ballot,
+					Acks:    []Ack{Ack{
+						CmdId: slowAck.CmdId,
+						Dep:   nil,
+					}},
 				}
+				is := map[CommandId]int{slowAck.CmdId: 0}
+
 				acks.LightSlowAcks[0] = *slowAck
 				freeSlowAck(slowAck)
 				for i := 1; i < sLen; i++ {
 					s := <-b.lightSlowAcks
 					acks.LightSlowAcks[i] = *s
+
+					if ballot == s.Ballot {
+						is[s.CmdId] = len(optAcks.Acks)
+						optAcks.Acks = append(optAcks.Acks, Ack{
+							CmdId: s.CmdId,
+							Dep:   nil,
+						})
+					} else {
+						ballot = -1
+					}
 					freeSlowAck(s)
 				}
-				r.sender.SendToAll(acks, r.cs.acksRPC)
+				for i := 0; i < fLen; i++ {
+					f := <-b.fastAcks
+					acks.FastAcks[i] = *f
+
+					if ballot == f.Ballot {
+						_, exists := is[f.CmdId]
+						if !exists {
+							is[f.CmdId] = len(optAcks.Acks)
+							optAcks.Acks = append(optAcks.Acks, Ack{
+								CmdId: f.CmdId,
+								Dep:   f.Dep,
+							})
+						}
+					} else {
+						ballot = -1
+					}
+					freeFastAck(f)
+				}
+
+				if ballot != -1 {
+					r.sender.SendToAll(optAcks, r.cs.optAcksRPC)
+				} else {
+					r.sender.SendToAll(acks, r.cs.acksRPC)
+				}
 			}
 		}
 	}()

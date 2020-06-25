@@ -281,7 +281,11 @@ func (r *Replica) run() {
 				fastAck.Replica = optAcks.Replica
 				fastAck.Ballot = optAcks.Ballot
 				fastAck.CmdId = ack.CmdId
-				fastAck.Dep = ack.Dep
+				if !IsNilDepOfCmdId(ack.CmdId, ack.Dep) {
+					fastAck.Dep = ack.Dep
+				} else {
+					fastAck.Dep = nil
+				}
 				r.getCmdDesc(fastAck.CmdId, fastAck, nil)
 			}
 

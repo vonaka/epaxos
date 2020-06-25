@@ -36,6 +36,14 @@ func (cmdId CommandId) String() string {
 
 type Dep []CommandId
 
+func NilDepOfCmdId(cmdId CommandId) Dep {
+	return []CommandId{cmdId}
+}
+
+func IsNilDepOfCmdId(cmdId CommandId, dep Dep) bool {
+	return len(dep) == 1 && dep[0] == cmdId
+}
+
 func (dep1 Dep) Equals(dep2 Dep) bool {
 	if len(dep1) != len(dep2) {
 		return false

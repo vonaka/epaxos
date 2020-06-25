@@ -58,12 +58,12 @@ func NewBatcher(r *Replica, size int,
 					if ballot == s.Ballot {
 						iCmdId, exists := is[s.CmdId]
 						if exists {
-							optAcks.Acks[iCmdId].Dep = nil
+							optAcks.Acks[iCmdId].Dep = NilDepOfCmdId(s.CmdId)
 						} else {
 							is[s.CmdId] = len(optAcks.Acks)
 							optAcks.Acks = append(optAcks.Acks, Ack{
 								CmdId: s.CmdId,
-								Dep:   nil,
+								Dep:   NilDepOfCmdId(s.CmdId),
 							})
 						}
 					} else {
@@ -92,7 +92,7 @@ func NewBatcher(r *Replica, size int,
 					Ballot:  slowAck.Ballot,
 					Acks:    []Ack{Ack{
 						CmdId: slowAck.CmdId,
-						Dep:   nil,
+						Dep:   NilDepOfCmdId(slowAck.CmdId),
 					}},
 				}
 				is := map[CommandId]int{slowAck.CmdId: 0}
@@ -107,7 +107,7 @@ func NewBatcher(r *Replica, size int,
 						is[s.CmdId] = len(optAcks.Acks)
 						optAcks.Acks = append(optAcks.Acks, Ack{
 							CmdId: s.CmdId,
-							Dep:   nil,
+							Dep:   NilDepOfCmdId(s.CmdId),
 						})
 					} else {
 						ballot = -1

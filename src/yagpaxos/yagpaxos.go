@@ -35,8 +35,8 @@ type Replica struct {
 
 	deliverChan chan CommandId
 
-	usePool      bool
 	descPool     sync.Pool
+	poolLevel    int
 	routineCount int
 }
 
@@ -100,8 +100,8 @@ type CommunicationSupply struct {
 	collectRPC      uint8
 }
 
-func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
-	failures int, qfile string) *Replica {
+func NewReplica(replicaId int, peerAddrs []string, exec, dreply bool,
+	poolLevel, failures int, qfile string) *Replica {
 
 	cmap.SHARD_COUNT = 32768
 
@@ -147,9 +147,9 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
 
 		deliverChan: make(chan CommandId, genericsmr.CHAN_BUFFER_SIZE),
 
+		poolLevel:    poolLevel,
 		routineCount: 0,
 
-		usePool:  usePool,
 		descPool: sync.Pool{
 			New: func() interface{} {
 				return &commandDesc{}
@@ -157,10 +157,10 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply, usePool bool,
 		},
 	}
 
+	useFastAckPool = poolLevel > 1
+
 	r.sender = NewSender(r.Replica)
-	r.batcher = NewBatcher(r, 16, func(f *MFastAck) {
-		fastAckPool.Put(f)
-	}, func(_ *MLightSlowAck){})
+	r.batcher = NewBatcher(r, 16, releaseFastAck, func(_ *MLightSlowAck){})
 	r.repchan = NewReplyChan(r.Replica)
 	r.qs = NewQuorumSet(r.N/2+1, r.N)
 
@@ -616,9 +616,9 @@ func (r *Replica) newDesc() *commandDesc {
 	}
 
 	freeFastAck := func(msg interface{}) {
-		switch msg.(type) {
+		switch f := msg.(type) {
 		case *MFastAck:
-			fastAckPool.Put(msg)
+			releaseFastAck(f)
 		}
 	}
 
@@ -630,14 +630,14 @@ func (r *Replica) newDesc() *commandDesc {
 }
 
 func (r *Replica) allocDesc() *commandDesc {
-	if r.usePool {
+	if r.poolLevel > 0 {
 		return r.descPool.Get().(*commandDesc)
 	}
 	return &commandDesc{}
 }
 
 func (r *Replica) freeDesc(desc *commandDesc) {
-	if r.usePool {
+	if r.poolLevel > 0 {
 		r.descPool.Put(desc)
 	}
 }

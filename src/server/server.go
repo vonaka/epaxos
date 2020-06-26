@@ -47,7 +47,7 @@ var transitiveConflicts *bool = flag.Bool("transitiveconf", true, "Conflict rela
 var proxy = flag.String("proxy", "NONE", "List of proxy IPs for this server")
 var qfile *string = flag.String("qfile", "", "Quorum config file (for yagpaxos only).")
 var descNum *int = flag.Int("desc", 100, "Number of command descriptors (only for yagpaxos and optpaxos).")
-var usePool *bool = flag.Bool("pool", true, "Use pools for internal allocations (only for yagpaxos andd optpaxos).")
+var poolLevel *int = flag.Int("pool", 1, "Level of pool usage from 0 to 2 (only for yagpaxos and optpaxos).")
 var conf *int = flag.Int("conflict", 100, "Conflict rate (used in simulations).")
 
 func initProxy(proxy string) {
@@ -115,7 +115,7 @@ func main() {
 		log.Println("Starting Yet Another Generalized Paxos replica...")
 		yagpaxos.MaxDescRoutines = *descNum
 		rep := yagpaxos.NewReplica(replicaId, nodeList, *exec, *dreply,
-			*usePool, *maxfailures, *qfile)
+			*poolLevel, *maxfailures, *qfile)
 		rpc.Register(rep)
 	} else if *simYagpaxos {
 		log.Println("Starting Yet Another Generalized Paxos replica...")

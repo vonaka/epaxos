@@ -1,3 +1,4 @@
+
 package yagpaxos
 
 import (
@@ -94,14 +95,26 @@ type MFlush struct {
 	Ballot  int32
 }
 
-var fastAckPool = sync.Pool{
-	New: func() interface{} {
-		return &MFastAck{}
-	},
-}
+var (
+	useFastAckPool = false
+	fastAckPool = sync.Pool{
+		New: func() interface{} {
+			return &MFastAck{}
+		},
+	}
+)
 
 func newFastAck() *MFastAck {
-	return fastAckPool.Get().(*MFastAck)
+	if useFastAckPool {
+		return fastAckPool.Get().(*MFastAck)
+	}
+	return &MFastAck{}
+}
+
+func releaseFastAck(f *MFastAck) {
+	if useFastAckPool {
+		fastAckPool.Put(f)
+	}
 }
 
 func copyFastAck(fa *MFastAck) *MFastAck {

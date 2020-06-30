@@ -48,14 +48,15 @@ type Beacon struct {
 }
 
 type Replica struct {
-	N            int        // total number of replicas
-	Id           int32      // the ID of the current replica
-	PeerAddrList []string   // array with the IP:port address of every replica
-	Peers        []net.Conn // cache of connections to all other replicas
-	PeerReaders  []*bufio.Reader
-	PeerWriters  []*bufio.Writer
-	Alive        []bool // connection status
-	Listener     net.Listener
+	N             int        // total number of replicas
+	Id            int32      // the ID of the current replica
+	PeerAddrList  []string   // array with the IP:port address of every replica
+	Peers         []net.Conn // cache of connections to all other replicas
+	PeerReaders   []*bufio.Reader
+	PeerWriters   []*bufio.Writer
+	ClientWriters map[int32]*bufio.Writer
+	Alive         []bool // connection status
+	Listener      net.Listener
 
 	State *state.State
 
@@ -96,6 +97,7 @@ func NewReplica(id int, peerAddrList []string, thrifty bool, exec bool, lread bo
 		make([]net.Conn, len(peerAddrList)),
 		make([]*bufio.Reader, len(peerAddrList)),
 		make([]*bufio.Writer, len(peerAddrList)),
+		make(map[int32]*bufio.Writer),
 		make([]bool, len(peerAddrList)),
 		nil,
 		state.InitState(),
@@ -370,6 +372,9 @@ func (r *Replica) clientListener(conn net.Conn) {
 			if err = propose.Unmarshal(reader); err != nil {
 				break
 			}
+			r.M.Lock()
+			r.ClientWriters[propose.ClientId] = writer
+			r.M.Unlock()
 			if r.LRead && (propose.Command.Op == state.GET || propose.Command.Op == state.SCAN) {
 				val := propose.Command.Execute(r.State)
 				propreply := &genericsmrproto.ProposeReplyTS{
@@ -425,7 +430,7 @@ func (r *Replica) RegisterRPC(msgObj fastrpc.Serializable, notify chan fastrpc.S
 	code := r.rpcCode
 	r.rpcCode++
 	r.rpcTable[code] = &RPCPair{msgObj, notify}
-	dlog.Println("registering RPC ", r.rpcCode)
+	dlog.Println("registering RPC ", code)
 	return code
 }
 
@@ -439,6 +444,20 @@ func (r *Replica) SendMsg(peerId int32, code uint8, msg fastrpc.Serializable) {
 		return
 	}
 	w.WriteByte(code)
+	msg.Marshal(w)
+	w.Flush()
+}
+
+func (r *Replica) SendClientMsg(id int32, c uint8, msg fastrpc.Serializable) {
+	r.M.Lock()
+	defer r.M.Unlock()
+
+	w := r.ClientWriters[id]
+	if w == nil {
+		log.Printf("Connection to client %d lost!\n", id)
+		return
+	}
+	w.WriteByte(c)
 	msg.Marshal(w)
 	w.Flush()
 }

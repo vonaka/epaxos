@@ -5,7 +5,9 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fastrpc"
 	"fmt"
+	"genericsmr"
 	"genericsmrproto"
 	"io"
 	"log"
@@ -51,11 +53,14 @@ type Parameters struct {
 	collocatedId   int
 
 	logger *log.Logger
+
+	rpcCode    uint8
+	rpcTable   map[uint8]*genericsmr.RPCPair
+	customExec bool
+	ValChan    chan []byte
 }
 
-var (
-	CollocatedWith = "NONE"
-)
+var CollocatedWith = "NONE"
 
 func getClinetId() int32 {
 	return int32(uuid.New().ID())
@@ -91,11 +96,24 @@ func NewParameters(masterAddr string, masterPort int,
 		collocatedId:   -1,
 
 		logger: logger,
+
+		rpcCode:    0,
+		rpcTable:   make(map[uint8]*genericsmr.RPCPair),
+		customExec: false,
+		ValChan:    make(chan []byte, 8),
 	}
 }
 
 func (b *Parameters) Id() int32 {
 	return b.clientId
+}
+
+func (b *Parameters) RegisterRPC(msgObj fastrpc.Serializable,
+	notify chan fastrpc.Serializable) uint8 {
+	code := b.rpcCode
+	b.rpcCode++
+	b.rpcTable[code] = &genericsmr.RPCPair{msgObj, notify}
+	return code
 }
 
 func (b *Parameters) Connect() error {
@@ -176,6 +194,28 @@ func (b *Parameters) Connect() error {
 		b.servers[i] = Dial(b.replicaLists[i], false, b.logger)
 		b.readers[i] = bufio.NewReader(b.servers[i])
 		b.writers[i] = bufio.NewWriter(b.servers[i])
+		go func(reader *bufio.Reader) {
+			var (
+				msgType uint8
+				err     error
+			)
+			for b.customExec && err == nil {
+				if msgType, err = reader.ReadByte(); err != nil {
+					break
+				}
+				if rpair, exists := b.rpcTable[msgType]; exists {
+					obj := rpair.Obj.New()
+					if err = obj.Unmarshal(reader); err != nil {
+						break
+					}
+					go func() {
+						rpair.Chan <- obj
+					}()
+				} else {
+					b.logger.Fatal("Error: received unknown message:", msgType)
+				}
+			}
+		}(b.readers[i])
 	}
 
 	b.logger.Println("Connected")
@@ -389,6 +429,10 @@ func (b *Parameters) execute(args genericsmrproto.Propose) []byte {
 					b.writers[rep].Flush()
 				}
 			}
+		}
+
+		if b.customExec {
+			return <-b.ValChan
 		}
 
 		if b.isFast {

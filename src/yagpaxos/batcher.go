@@ -27,7 +27,7 @@ func NewBatcher(r *Replica, size int,
 				optAcks := &MOptAcks{
 					Replica: r.Id,
 					Ballot:  fastAck.Ballot,
-					Acks:    []Ack{Ack{
+					Acks: []Ack{Ack{
 						CmdId: fastAck.CmdId,
 						Dep:   fastAck.Dep,
 					}},
@@ -90,7 +90,7 @@ func NewBatcher(r *Replica, size int,
 				optAcks := &MOptAcks{
 					Replica: r.Id,
 					Ballot:  slowAck.Ballot,
-					Acks:    []Ack{Ack{
+					Acks: []Ack{Ack{
 						CmdId: slowAck.CmdId,
 						Dep:   NilDepOfCmdId(slowAck.CmdId),
 					}},

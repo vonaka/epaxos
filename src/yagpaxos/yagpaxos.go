@@ -41,10 +41,10 @@ type Replica struct {
 }
 
 type commandDesc struct {
-	phase   int
-	cmd     state.Command
-	dep     Dep
-	propose *genericsmr.Propose
+	phase      int
+	cmd        state.Command
+	dep        Dep
+	propose    *genericsmr.Propose
 	proposeDep Dep
 
 	fastAndSlowAcks *MsgSet
@@ -160,7 +160,7 @@ func NewReplica(replicaId int, peerAddrs []string, exec, dreply bool,
 	useFastAckPool = poolLevel > 1
 
 	r.sender = NewSender(r.Replica)
-	r.batcher = NewBatcher(r, 16, releaseFastAck, func(_ *MLightSlowAck){})
+	r.batcher = NewBatcher(r, 16, releaseFastAck, func(_ *MLightSlowAck) {})
 	r.repchan = NewReplyChan(r.Replica)
 	r.qs = NewQuorumSet(r.N/2+1, r.N)
 

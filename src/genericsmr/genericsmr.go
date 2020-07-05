@@ -26,7 +26,7 @@ const TRUE = uint8(1)
 const FALSE = uint8(0)
 
 var (
-	storage string
+	storage    string
 	ProxyAddrs = make(map[string]struct{})
 )
 
@@ -37,8 +37,8 @@ type RPCPair struct {
 
 type Propose struct {
 	*genericsmrproto.Propose
-	Reply     *bufio.Writer
-	Mutex     *sync.Mutex
+	Reply      *bufio.Writer
+	Mutex      *sync.Mutex
 	Collocated bool
 }
 
@@ -245,7 +245,7 @@ func (r *Replica) waitForPeerConnections(done chan bool) {
 	bs := b[:4]
 
 	port := strings.Split(r.PeerAddrList[r.Id], ":")[1]
-	l, err := net.Listen("tcp", "0.0.0.0:" + port)
+	l, err := net.Listen("tcp", "0.0.0.0:"+port)
 	if err != nil {
 		log.Fatal(r.PeerAddrList[r.Id], err)
 	}

@@ -70,8 +70,8 @@ func runProxy(logPath string) {
 	logF := os.Stdout
 	if logPath != "" {
 		logF_0,
-		/* stupid golang! why are you forcing me to create new variables? */
-		err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, 0644)
+			/* stupid golang! why are you forcing me to create new variables? */
+			err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Fatal("Can't open log file:", logPath)
 		}
